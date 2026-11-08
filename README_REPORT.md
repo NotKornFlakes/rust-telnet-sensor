@@ -198,10 +198,10 @@ Every step of the playbook above depends on something a network owner controls.
 4. **Alert on new outbound connections from IoT devices.** These devices talk to a small, fixed
    set of servers, so a connection to an unfamiliar address is worth a look, especially within
    minutes of an inbound login. Detection 3 below does this from firewall logs.
-5. **Use IP reputation blocklists, but as one layer, not the defence.** Scored on Nov 7, 301 of the
-   478 IPs (63%) were at 75 or above, so a blocklist at that threshold would catch about 63% of
-   them. The ones it would have missed on arrival were the persistent bots: none of their 7 IPs had
-   any reports until after they reached the honeypot, though all score 100 now. A blocklist only
+5. **Use IP reputation blocklists, but as one layer, not the defence.** By Nov 7, 301 of the 478
+   IPs (63%) scored 75 or above. On the day they arrived, fewer would have: at least 23 of those
+   301 had no reports until after they reached the honeypot. They include all 7 IPs behind the
+   persistent bots, which score 100 now. A blocklist only
    knows yesterday's attackers, so it adds to steps 1 to 4 rather than replacing them.
 
 ## The telnet opening: result and caveat
