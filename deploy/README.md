@@ -8,7 +8,7 @@ gcloud compute firewall-rules delete honeypot-fake-login --quiet
 ```
 
 **Daily logs.** From the top of the repo, this copies the logs to your computer and prints a
-short summary.
+short summary, including the AbuseIPDB review list (see "Reporting to AbuseIPDB" below).
 
 ```sh
 deploy/daily-logs.sh
@@ -307,6 +307,58 @@ find ~/honeypot-logs -name 'visits-*.jsonl' -mtime +30 -delete
 `deploy/daily-logs.sh` does the same, but copies only the logs that have changed, then prints a
 short summary and tells you if anything means you should stop the server. It's meant to be run
 once a day.
+
+## Reporting to AbuseIPDB
+
+`deploy/daily-logs.sh` also prints a review list: every IP that got into the fake shell in the
+last 24 hours, masked to two numbers, with its sessions, what it did and the categories it would
+be reported under. It never reports anything itself. Left out: your own test IPs, anything that
+isn't a public IP, and any IP reported in the last 7 days. Research scanners are marked `skip`:
+Censys by its published ranges, and Shodan and similar by a reverse DNS name that resolves back to
+the same IP, so a fake PTR record can't get an attacker skipped.
+
+To report them, run this in your own terminal, from the top of the repo:
+
+```sh
+python3 analysis/report_abuseipdb.py          # shows what it would report, sends nothing
+python3 analysis/report_abuseipdb.py --send   # asks you to confirm, then for your API key
+```
+
+With `--send` it shows the list again, asks for any numbers to leave out, and asks you to type
+`yes`. Only then does it ask for your AbuseIPDB API key, without showing it, and the key is never
+saved. Each report sends the IP, categories 18 Brute-Force and 23 IoT Targeted, the time the IP
+was first seen that day, and one of three fixed comments, so it never holds a password, a command,
+an address or any IP. Each comment starts "Telnet honeypot posing as an IoT device: logged in with
+a factory-default username and password, then", and ends as below.
+
+| What the IP did  | Comment ends                                            |
+| ---------------- | ------------------------------------------------------- |
+| Logged in only   | "sent no commands."                                     |
+| Sent commands    | "sent shell commands."                                  |
+| Tried a download | "tried to download and run a file from another server." |
+
+Each report is recorded as soon as it goes through, in `~/honeypot-logs/abuseipdb/reported.json`,
+so running the script again never reports the same IP twice in 7 days. It pauses between reports,
+skips an IP AbuseIPDB says you reported in the last 15 minutes, and stops when the key is refused
+or the daily limit is reached (1,000 reports on a free account). Running it again skips everything
+already recorded.
+
+| Option               | What it does                       |
+| -------------------- | ---------------------------------- |
+| `--include-scanners` | Reports the research scanners too  |
+| `--limit N`          | Sends at most N reports in one run |
+
+Both files in `~/honeypot-logs/abuseipdb/` hold full IPs, so they follow safety rule 4 like the
+logs: readable only by you, out of git and cloud sync, and entries older than 30 days are dropped
+each day. To rebuild the list without the rest of the daily check, run
+`python3 analysis/abuse_review.py`. Add `--no-dns` to skip the reverse lookups, which send each IP
+to your DNS resolver and can show the IP's owner that someone looked it up.
+
+The tests for both scripts need no network and no key:
+
+```sh
+python3 -m unittest discover -s analysis -p 'test_*.py'
+```
 
 ## Updating the server
 

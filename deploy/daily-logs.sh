@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Copies the visit logs to this computer and prints a short summary. Run it once a day.
+# Copies the visit logs to this computer and prints a short summary. Run it once a day. It also
+# builds the AbuseIPDB review list, masked, without reporting anything.
 #
 # Logs are private and hostile, so the summary never shows a password, a command or a download
 # address, cuts each IP address down to its first two numbers, and strips anything that could
@@ -208,6 +209,14 @@ else
     stop_because "the server sent more than the limits allow (over $MAX_SENT_MB_PER_DAY MB in the last 24 hours)"
   fi
 fi
+
+echo
+# The AbuseIPDB review list: IPs that got into the fake shell in the last day, masked here. The
+# full list stays in $LOG_DIR/abuseipdb for analysis/report_abuseipdb.py, which reports only after
+# you confirm. Nothing is reported from here. A failure here doesn't hide the verdict below.
+REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+python3 -I "$REPO_ROOT/analysis/abuse_review.py" --logs "$LOG_DIR" 2>>"$ERRORS" | printable ||
+  echo "AbuseIPDB review list: couldn't be built. Run python3 analysis/abuse_review.py to see why."
 
 echo
 if [ "${#REASONS[@]}" -gt 0 ]; then
