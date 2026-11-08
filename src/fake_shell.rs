@@ -142,6 +142,7 @@ pub const CANNED: &[(&str, &str)] = &[
     // still what stops a visitor's words coming back. `echo ANYTHING_ELSE` still gets the blank
     // line. A real `echo` that sends back whatever was typed wouldn't compile here, and that's
     // the point.
+    ("echo SHELL_TEST", "SHELL_TEST\r\n"),
     ("echo", "\r\n"),
     // These print nothing when they work, so printing nothing looks right. None of them do
     // anything either.

@@ -45,7 +45,7 @@ pub const TIMEOUT: Duration = Duration::from_secs(30);
 /// Hint: `.trim()` would remove spaces too, so use `.trim_end_matches(...)`. You
 /// can give it a list of characters, like `['x', 'y']`.
 pub fn strip_line_ending(line: &str) -> &str {
-    line.trim_end_matches(&['\n', '\r'])
+    line.trim_end_matches(['\n', '\r'])
 }
 
 /// EXERCISE 2: make text safe to log and to print.
