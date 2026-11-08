@@ -1,5 +1,7 @@
 # Rust Telnet Honeypot
 
+[![CI](https://github.com/NotKornFlakes/rust-telnet-sensor/actions/workflows/ci.yml/badge.svg)](https://github.com/NotKornFlakes/rust-telnet-sensor/actions/workflows/ci.yml)
+
 By [Timothy Fletcher](https://timfletcher.tech)
 
 A medium-interaction telnet honeypot written in Rust, run on Google Cloud for 86 hours to
@@ -24,6 +26,10 @@ download had no reports until after they reached the honeypot, so an IP blocklis
 stopped them when they arrived.
 
 Read [the full report](README_REPORT.md) or visit [the project page](https://timfletcher.tech/honeypot/).
+
+The report's [What defenders should do](README_REPORT.md#what-defenders-should-do) section lists
+the fixes. The follow-up project, [playbook-defense](https://github.com/NotKornFlakes/playbook-defense),
+turns these findings into alerts, a firewall allowlist and an internal decoy.
 
 ## How it was built
 

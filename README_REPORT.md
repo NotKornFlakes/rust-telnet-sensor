@@ -204,6 +204,9 @@ Every step of the playbook above depends on something a network owner controls.
    persistent bots, which score 100 now. A blocklist only
    knows yesterday's attackers, so it adds to steps 1 to 4 rather than replacing them.
 
+The follow-up project, [playbook-defense](https://github.com/NotKornFlakes/playbook-defense),
+turns these findings into alerts, a firewall allowlist and an internal decoy.
+
 ## The telnet opening: result and caveat
 
 **Why it was added.** In the day before the shell, the honeypot only showed a login prompt, and
