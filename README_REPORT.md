@@ -22,6 +22,7 @@
 | Logins into the fake shell | 481 from 152 IP addresses |
 | Commands | 1,772, of which 74 were different |
 | Download attempts | 13 sessions from 7 IPs, naming 7 different addresses |
+| Already reported to AbuseIPDB | 472 of the 478 IPs seen Nov 2–6, at least 417 of them before they reached the honeypot |
 | Outbound connections made by the honeypot | **0** |
 | Crashes, restarts, program errors | 0, 0, 0 |
 | Visits that sent nothing at all | 12%, down from 82% before the telnet opening |
@@ -161,7 +162,8 @@ for a year of reports. Only the IP addresses were sent, with nothing from the lo
 reported. [analysis/threat_intel_lookup.py](analysis/threat_intel_lookup.py) does the lookups.
 
 - **Almost all were already reported.** 472 of the 478 (99%) had reports from the past year, and
-  417 (87%) had been reported before the honeypot first saw them, a median of 22 days earlier.
+  at least 417 (87%) had been reported before the honeypot first saw them, a median of at least 22
+  days earlier. The other 6 had no reports in the past year.
 - **New attackers were reported fast.** 3 of the 7 IPs that tried a download had no reports when
   the honeypot first saw them. Within three days of their first report, they had 1,055 to 5,343
   each.
@@ -176,7 +178,10 @@ reported. [analysis/threat_intel_lookup.py](analysis/threat_intel_lookup.py) doe
   fixed-line ISPs, the kind that sell home and office broadband, rather than hosting.
 
 AbuseIPDB returns only the past year of reports, so "before" means within that year, and scores
-are as of Nov 7, after these IPs had visited.
+are as of Nov 7, after these IPs had visited. It also lists at most 10,000 reports per IP. 20 IPs
+had more, and 11 of those had no listed report from before the honeypot saw them, so they may have
+been reported earlier too. That's why the 417 and the 22 days are lower bounds. None of the IPs
+named in the campaigns above, or that tried a download, had more than 10,000 reports.
 
 ## What defenders should do
 

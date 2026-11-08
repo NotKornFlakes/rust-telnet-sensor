@@ -17,6 +17,12 @@ and that guide is below, under "How it was built".
   <img src="docs/images/funnel-light.png" alt="Funnel chart, Nov 3–6: 2,450 connections; 2,132 sent a login (87%); 481 got into the shell (19.6%); 414 sent a command (16.9%); 165 ran a real-shell check (6.7%); 13 reached a download (0.5%).">
 </picture>
 
+**Were these IPs already known?** I checked all 478 IPs that visited from Nov 2 to Nov 6
+against AbuseIPDB. 472 had reports from the past year, at least 417 of them from before the
+honeypot first saw them, and the other 6 had none in the past year. 3 of the 7 IPs that tried a
+download had no reports until after they reached the honeypot, so an IP blocklist wouldn't have
+stopped them when they arrived.
+
 Read [the full report](README_REPORT.md) or visit [the project page](https://timfletcher.tech/honeypot/).
 
 ## How it was built
