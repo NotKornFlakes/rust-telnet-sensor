@@ -247,18 +247,20 @@ that log process starts (auditd or eBPF), while the KQL query works from firewal
 see IoT devices.
 
 **1. BusyBox started with a made-up applet name (Sigma).** Real applet names are lower case.
-Bots use an upper-case word to test for a real BusyBox.
+Bots use an upper-case word to test for a real BusyBox. Later bots used a random word of mixed
+case instead, so the rule looks for an upper-case letter anywhere in the word (see the update).
 
 ```yaml
-title: BusyBox Started With an Upper-Case Word Instead of an Applet
+title: BusyBox Started With a Word Holding an Upper-Case Letter Instead of an Applet
 id: 49d81c14-1dc7-451f-8515-05d2f6bf4e89
 status: experimental
 description: >
-  Detects BusyBox run with an upper-case word where an applet name belongs, such as
-  "/bin/busybox SORA". IoT bots send this right after logging in and expect
-  "SORA: applet not found" back, which tells them the shell is real.
+  Detects BusyBox run with a word holding an upper-case letter where an applet name belongs,
+  such as "/bin/busybox SORA" or a random word of mixed case. IoT bots send this right after
+  logging in and expect "SORA: applet not found" back, which tells them the shell is real.
 author: Timothy Fletcher
 date: 2026-11-06
+modified: 2026-11-10
 tags:
   - attack.discovery
   - attack.t1082
@@ -270,27 +272,30 @@ logsource:
 detection:
   selection:
     Image|endswith: '/busybox'
-    CommandLine|re: 'busybox [A-Z][A-Za-z0-9]{2,}'
+    CommandLine|re: 'busybox [a-z0-9]*[A-Z]'
   condition: selection
 falsepositives:
   - Unlikely, since real BusyBox applet names are lower case
 level: high
 ```
 
-**2. A download tool fetches a CPU-named binary or a piped script from a bare IP (Sigma).** All 7
-download addresses in the data used a raw IP. Most named the file after a CPU type, sat under
-`/bins/`, or were piped straight into `sh`.
+**2. A download tool fetches a CPU-named binary or a piped script from a bare IP, or uses FTP
+(Sigma).** All 7 download addresses in the data used a raw IP. Most named the file after a CPU
+type, sat under `/bins/`, or were piped straight into `sh`. Later droppers also fell back on
+BusyBox's `ftpget`, which the rule now covers (see the update).
 
 ```yaml
-title: Download Tool Fetches a CPU-Named Binary or Piped Script From a Bare IP Address
+title: Download Tool Fetches a CPU-Named Binary or Piped Script, or Uses FTP, From a Bare IP Address
 id: 2d2e6608-74b8-4e82-8dbc-15bfed00844b
 status: experimental
 description: >
   Detects wget, curl, tftp or BusyBox fetching from a raw IPv4 address where the file is
   named after a CPU type (arm7, mips, mpsl and so on), sits under /bins/, or is written to
-  standard output for a shell. IoT droppers on a telnet honeypot fetched their payloads this way.
+  standard output for a shell, and BusyBox's ftpget fetching anything from a raw IPv4 address.
+  IoT droppers on a telnet honeypot fetched their payloads this way.
 author: Timothy Fletcher
 date: 2026-11-06
+modified: 2026-11-10
 tags:
   - attack.command-and-control
   - attack.t1105
@@ -304,15 +309,16 @@ detection:
       - '/curl'
       - '/tftp'
       - '/busybox'
+      - '/ftpget'
   selection_bare_ip:
     CommandLine|re: '(^|[\s/@])\d{1,3}(\.\d{1,3}){3}([\s:/]|$)'
   selection_payload:
     - CommandLine|re: '[_./-](arm[4-7]?|mips|mpsl|mipsel|m68k|ppc|sh4|spc|x86|i[3-6]86)(\s|$)'
-    - CommandLine|contains:
-        - '/bins/'
-        - '-qO-'
-        - '-O- '
-  condition: all of selection_*
+    - CommandLine|contains: '/bins/'
+    - CommandLine|re: '\s-(qO|O|o)-(\s|$)'
+  selection_ftp:
+    CommandLine|re: '(^|[\s/])ftpget\s'
+  condition: selection_tool and selection_bare_ip and (selection_payload or selection_ftp)
 falsepositives:
   - Internal package mirrors reached by IP address that serve one build per CPU type
 level: medium
