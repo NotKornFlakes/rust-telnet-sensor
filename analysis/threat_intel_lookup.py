@@ -5,6 +5,7 @@ Run it by hand from the repository root:
 
     python3 analysis/threat_intel_lookup.py           # shows what it would look up, sends nothing
     python3 analysis/threat_intel_lookup.py --send    # does the lookups after you type yes
+    python3 analysis/threat_intel_lookup.py --first-reporter --send   # who reported each IP first
 
 What it sends, and nothing else:
   - URLhaus, with your Auth-Key: each download address to the URL lookup
@@ -19,6 +20,15 @@ Passwords are read once, only to leave out your own test visits, as the notebook
 
 Keys come from the URLHAUS_AUTH_KEY and ABUSEIPDB_KEY environment variables, or it asks for them
 without echoing. They're never written down or printed.
+
+With --first-reporter it looks up, instead, each IP that analysis/report_abuseipdb.py recorded
+in ~/honeypot-logs/abuseipdb/reported.json, with the same AbuseIPDB check, and says who reported
+it first: us, someone else, or can't tell. Our report is the one with the exact comment and
+categories we recorded, dated when the reporter ran or at the attack time it sent (AbuseIPDB may
+use either), and any other report from the same account counts as ours too. AbuseIPDB lists at
+most 10,000 reports per IP, so when it has more than it lists and ours is the earliest listed,
+the answer is "can't tell": the missing ones may be older. "First" means first in the past year,
+the furthest back AbuseIPDB goes. Other reporters' comments are never shown or saved.
 
 Results go to ~/honeypot-logs/intel/lookups.json, readable only by you. They hold full IPs and
 addresses, so safety rule 4 applies: never commit or publish the file. Entries older than 30 days
@@ -41,12 +51,20 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import abuse_review  # noqa: E402
+
 LOG_DIR = Path.home() / "honeypot-logs"
 OUT_FILE = LOG_DIR / "intel" / "lookups.json"
 KEEP_DAYS = 30  # the same as deploy/daily-logs.sh
 OWN_TEST_PASSWORD = "not-on-the-list"  # my own test visits used this password
 REPORT_DAYS = 365  # the longest look-back AbuseIPDB allows
 FREE_DAILY_CHECKS = 1000
+LISTED_REPORTS_CAP = 10_000  # the most reports AbuseIPDB lists for one IP
+# Our report is dated when the reporter ran, give or take the clocks, or at the attack time it sent.
+# The reporter records its start time, and a long run sends its last report a while later.
+CLOCK_SLACK = timedelta(minutes=5)
+RUN_LENGTH = timedelta(hours=1)
 
 URLHAUS_URL = "https://urlhaus-api.abuse.ch/v1/url/"
 URLHAUS_HOST = "https://urlhaus-api.abuse.ch/v1/host/"
@@ -162,10 +180,10 @@ def read_logs(log_dir):
 
 def load_results(path):
     if not path.exists():
-        return {"format": 1, "urlhaus": {}, "abuseipdb": {}}
+        return {"format": 1, "urlhaus": {}, "abuseipdb": {}, "first_reporter": {}}
     data = json.loads(path.read_text())
     cutoff = now() - timedelta(days=KEEP_DAYS)
-    for section in ("urlhaus", "abuseipdb"):
+    for section in ("urlhaus", "abuseipdb", "first_reporter"):
         data[section] = {k: r for k, r in data.get(section, {}).items()
                          if parse_time(r["checked_at"]) >= cutoff}
     return data
@@ -263,7 +281,123 @@ def abuseipdb_checks(ips, key, results, out_file, limit):
                                               if remaining is not None else ""))
 
 
-def main():
+def first_reporter(ours, data):
+    """Who reported an IP first, from a verbose check lookup and our own record of reporting it.
+
+    The result holds times, counts and a verdict, never another reporter's comment or details.
+    """
+    d = data.get("data") or {}
+    reports = [r for r in d.get("reports") or [] if parse_time(r.get("reportedAt"))]
+    total = d.get("totalReports") or 0
+    reported_at, attack = parse_time(ours["reported_at"]), parse_time(ours.get("timestamp"))
+    categories = set(ours.get("categories") or [])
+
+    def at(r):
+        return parse_time(r["reportedAt"])
+
+    def looks_ours(r):
+        if r.get("comment") != ours.get("comment") or set(r.get("categories") or []) != categories:
+            return False  # the comments are public, so the time has to match as well
+        sent = reported_at - CLOCK_SLACK <= at(r) <= reported_at + RUN_LENGTH
+        return sent or (attack is not None and abs(at(r) - attack) <= CLOCK_SLACK)
+
+    result = {"our_report_at": ours["reported_at"], "listed": len(reports), "total_reports": total,
+              "ours_found": False, "others_before_us": None, "first_other_at": None}
+    matches = sorted((r for r in reports if looks_ours(r)), key=lambda r: abs(at(r) - reported_at))
+    if not matches:
+        return {**result, "first": "can't tell", "why": "our report isn't listed"}
+    mine = matches[0]
+    our_id = mine.get("reporterId")
+
+    def is_ours(r):
+        return r is mine or (our_id is not None and r.get("reporterId") == our_id)
+
+    our_first = min(at(r) for r in reports if is_ours(r))
+    others = sorted(at(r) for r in reports if not is_ours(r) and at(r) < our_first)
+    result.update(ours_found=True, others_before_us=len(others),
+                  first_other_at=others[0].isoformat() if others else None)
+    if others:
+        return {**result, "first": "someone else",
+                "why": f"{len(others)} report(s) from others before ours, the first on {others[0]:%b %d}"}
+    if len(reports) < total:
+        return {**result, "first": "can't tell",
+                "why": f"AbuseIPDB lists at most {LISTED_REPORTS_CAP:,} reports and has {total:,} for this IP, "
+                       "so older ones may be missing"}
+    return {**result, "first": "us", "why": "no listed report from anyone else before ours"}
+
+
+def first_reporter_checks(todo, key, results, out_file, limit):
+    done, remaining = 0, None
+    for ip, ours in todo.items():
+        if done >= limit:
+            print(f"  Stopped at --limit {limit}.")
+            break
+        query = urllib.parse.urlencode({"ipAddress": ip, "maxAgeInDays": REPORT_DAYS}) + "&verbose"
+        try:
+            data, headers = call("GET", ABUSEIPDB_CHECK, {"Key": key, "Accept": "application/json"},
+                                 query=query)
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                reset = (e.headers or {}).get("X-RateLimit-Reset")
+                when = datetime.fromtimestamp(int(reset), timezone.utc).strftime("%b %d %H:%M UTC") if reset else "later"
+                print(f"  AbuseIPDB's daily limit is used up. Run this again after {when}; it carries on "
+                      "where it stopped.")
+                break
+            raise
+        results["first_reporter"][ip] = {"checked_at": now().isoformat(), **first_reporter(ours, data)}
+        done += 1
+        remaining = headers.get("X-RateLimit-Remaining", remaining)
+        if done % 25 == 0:
+            save_results(out_file, results)
+            print(f"  {done} checked…")
+        time.sleep(0.2)
+    print(f"  {done} IPs checked this run." + (f" AbuseIPDB says {remaining} checks are left today."
+                                              if remaining is not None else ""))
+
+
+def first_reporter_main(args):
+    record = args.logs / "abuseipdb" / "reported.json"
+    if not record.exists():
+        raise SystemExit(f"No reports recorded at {record}. analysis/report_abuseipdb.py writes it.")
+    ours = json.loads(record.read_text()).get("reports", {})
+    results = load_results(args.out)
+    checked = results["first_reporter"]
+    # Each IP is checked once after our latest report of it. A newer report means a new check.
+    todo = {ip: o for ip, o in ours.items()
+            if args.refresh or checked.get(ip, {}).get("our_report_at") != o["reported_at"]}
+    print(f"AbuseIPDB: {min(len(todo), args.limit)} of the {len(ours)} IPs you reported to check for who "
+          f"reported them first, each asking for {REPORT_DAYS} days of reports. A free account has "
+          f"{FREE_DAILY_CHECKS:,} checks a day; a later run carries on where this one stops.")
+    if not todo:
+        print("\nNothing new to look up.")
+        return
+    if not args.send:
+        print("\nNothing was sent. Add --send to do these lookups.")
+        return
+    if not args.yes and input("\nSend these lookups? Type yes: ").strip().lower() != "yes":
+        print("Nothing was sent.")
+        return
+    try:
+        first_reporter_checks(todo, get_key("ABUSEIPDB_KEY", "AbuseIPDB API"), results, args.out, args.limit)
+    except urllib.error.HTTPError as e:
+        print(f"Stopped: {e.code} {e.reason} from AbuseIPDB. 401 or 403 usually means a wrong key.",
+              file=sys.stderr)
+    except urllib.error.URLError as e:
+        print(f"Stopped: couldn't reach AbuseIPDB ({e.reason}).", file=sys.stderr)
+    finally:
+        save_results(args.out, results)
+
+    found = {ip: checked[ip] for ip in ours if checked.get(ip, {}).get("our_report_at") == ours[ip]["reported_at"]}
+    print(f"\nSaved to {args.out}. IPs masked to two numbers:")
+    for ip, r in sorted(found.items(), key=lambda kv: (kv[1]["first"], kv[0])):
+        print(f"  {abuse_review.mask(ip):15} {r['first']:13} {r['why']}")
+    counts = Counter(r["first"] for r in found.values())
+    us, others, unknown = counts["us"], counts["someone else"], counts["can't tell"]
+    print(f"First to report, in the past year: us for {us} of {len(found)}, someone else for {others}, "
+          f"can't tell for {unknown}.")
+
+
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--send", action="store_true", help="do the lookups (without it, nothing is sent)")
     parser.add_argument("--yes", action="store_true", help="don't ask before sending")
@@ -272,7 +406,11 @@ def main():
     parser.add_argument("--limit", type=int, default=FREE_DAILY_CHECKS, help="most AbuseIPDB checks this run")
     parser.add_argument("--logs", type=Path, default=LOG_DIR)
     parser.add_argument("--out", type=Path, default=OUT_FILE)
-    args = parser.parse_args()
+    parser.add_argument("--first-reporter", action="store_true",
+                        help="check who reported each IP in reported.json first, instead of the usual lookups")
+    args = parser.parse_args(argv)
+    if args.first_reporter:
+        return first_reporter_main(args)
 
     ips, found, own_count, left_out = read_logs(args.logs)
     results = load_results(args.out)
