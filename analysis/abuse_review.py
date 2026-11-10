@@ -6,10 +6,13 @@ repository root:
 
     python3 analysis/abuse_review.py            # builds the list and shows it, masked
     python3 analysis/abuse_review.py --no-dns   # the same, without reverse DNS lookups
+    python3 analysis/abuse_review.py --since 2026-11-08T03:28Z   # everything since then
 
-A candidate is an IP that got into the fake shell in the last 24 hours. Left out: your own test
-IPs (any IP that ever used the test password), anything that isn't a public IP, and any IP the
-reporter recorded as reported in the last 7 days.
+A candidate is an IP that got into the fake shell in the last 24 hours, or since the time given
+with --since, such as the last run when you've missed a few days. The time is UTC unless it names
+another zone, and it can't be more than KEEP_DAYS back, because older logs are deleted. Left out:
+your own test IPs (any IP that ever used the test password), anything that isn't a public IP, and
+any IP the reporter recorded as reported in the last 7 days, however long the window.
 
 Research scanners such as Shodan and Censys are marked "skip", found by Censys's published ranges
 or by a reverse DNS name that resolves back to the same IP, so a PTR record alone can't fake one.
@@ -179,9 +182,12 @@ def activity_of(sessions):
     return "login only"
 
 
-def build_review(visits, at, reported, resolve):
-    """The review list as a dict. Nothing from the logs goes in except IPs, counts and times."""
-    start = at - WINDOW
+def build_review(visits, at, reported, resolve, since=None):
+    """The review list as a dict. Nothing from the logs goes in except IPs, counts and times.
+
+    The window is the last 24 hours, or from `since` when it's given.
+    """
+    start = at - WINDOW if since is None else since
     own = own_ips(visits)
     recent = reported_recently(reported, at)
     by_ip, left_out = {}, {"own test IPs": set(), "not a public IP": set(), "reported in the last 7 days": set()}
@@ -218,6 +224,12 @@ def build_review(visits, at, reported, resolve):
     }
 
 
+def window_of(review):
+    """The review's start and end, and whether it's the usual last 24 hours."""
+    start, end = parse_time(review["window_start"]), parse_time(review["window_end"])
+    return start, end, end - start == WINDOW
+
+
 def describe_categories(categories):
     return ", ".join(f"{c} {CATEGORY_NAMES.get(c, '?')}" for c in categories)
 
@@ -234,7 +246,9 @@ def summary_lines(review, path):
     found = review["candidates"]
     to_report = sum(not c["skip"] for c in found)
     left = ", ".join(f"{n} {why}" for why, n in review["left_out"].items())
-    lines = [f"AbuseIPDB review list, last 24 hours: {len(found)} IP(s) got into the fake shell. "
+    start, _, daily = window_of(review)
+    window = "last 24 hours" if daily else f"since {start:%b %d %H:%M} UTC"
+    lines = [f"AbuseIPDB review list, {window}: {len(found)} IP(s) got into the fake shell. "
              f"{to_report} to report, {len(found) - to_report} skipped by default.",
              f"  Left out: {left}."]
     lines += [f"  {candidate_line(i, c)}" for i, c in enumerate(found, 1)]
@@ -256,12 +270,28 @@ def save_private(path, data):
     os.replace(temp, path)
 
 
+def parse_since(text):
+    """A --since value: an ISO 8601 date or time, read as UTC unless it names another zone."""
+    try:
+        when = datetime.fromisoformat(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} isn't a date or time, such as 2026-11-08 or 2026-11-08T03:28Z")
+    return when.replace(tzinfo=timezone.utc) if when.tzinfo is None else when.astimezone(timezone.utc)
+
+
 def main(argv=None, now=now):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--logs", type=Path, default=LOG_DIR, help="the folder deploy/daily-logs.sh copies to")
     parser.add_argument("--no-dns", action="store_true", help="skip the reverse DNS lookups for scanners")
+    parser.add_argument("--since", type=parse_since, metavar="TIME",
+                        help="cover everything since this UTC date or time, instead of the last 24 hours")
     args = parser.parse_args(argv)
     at = now() if callable(now) else now
+    if args.since is not None and args.since > at:
+        parser.error("--since is in the future")
+    if args.since is not None and args.since < at - timedelta(days=KEEP_DAYS):
+        parser.error(f"--since can't be more than {KEEP_DAYS} days back, because older logs are deleted")
+    start = at - WINDOW if args.since is None else args.since
     folder = args.logs / "abuseipdb"
     visits = read_visits(args.logs)
     record = folder / "reported.json"
@@ -272,11 +302,10 @@ def main(argv=None, now=now):
     if args.no_dns:
         resolve = lambda ip: None  # noqa: E731
     else:
-        start = at - WINDOW
         ips = {v["source_ip"] for v in visits if v.get("outcome") == "logged_in" and is_public_ip(v["source_ip"])
                and start <= datetime.fromtimestamp(v["time"], timezone.utc) <= at}
         resolve = dns_resolver(sorted(ips))
-    review = build_review(visits, at, reported, resolve)
+    review = build_review(visits, at, reported, resolve, args.since)
     save_private(folder / "review.json", review)
     print("\n".join(summary_lines(review, folder / "review.json")))
 

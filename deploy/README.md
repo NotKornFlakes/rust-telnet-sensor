@@ -327,7 +327,7 @@ python3 analysis/report_abuseipdb.py --send   # asks you to confirm, then for yo
 With `--send` it shows the list again, asks for any numbers to leave out, and asks you to type
 `yes`. Only then does it ask for your AbuseIPDB API key, without showing it, and the key is never
 saved. Each report sends the IP, categories 18 Brute-Force and 23 IoT Targeted, the time the IP
-was first seen that day, and one of three fixed comments, so it never holds a password, a command,
+was first seen in the list's window, and one of three fixed comments, so it never holds a password, a command,
 an address or any IP. Each comment starts "Telnet honeypot posing as an IoT device: logged in with
 a factory-default username and password, then", and ends as below.
 
@@ -353,6 +353,17 @@ logs: readable only by you, out of git and cloud sync, and entries older than 30
 each day. To rebuild the list without the rest of the daily check, run
 `python3 analysis/abuse_review.py`. Add `--no-dns` to skip the reverse lookups, which send each IP
 to your DNS resolver and can show the IP's owner that someone looked it up.
+
+If you missed a few days, the daily list only covers the last 24 hours. Build one that goes back
+to your last run instead, and report from it before the next daily run replaces it:
+
+```sh
+python3 analysis/abuse_review.py --since 2026-11-08T03:28Z   # UTC unless the time names a zone
+python3 analysis/report_abuseipdb.py --send
+```
+
+The 7-day rule still applies, so nothing reported in the last week comes back, however far back
+the list goes. `--since` can't go back more than 30 days, because older logs are deleted.
 
 The tests for both scripts need no network and no key:
 

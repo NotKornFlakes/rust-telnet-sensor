@@ -107,6 +107,17 @@ class ReviewListTests(unittest.TestCase):
         self.assertEqual(c["first_seen"], (NOW - timedelta(hours=5)).isoformat())
         self.assertEqual(c["last_seen"], (NOW - timedelta(hours=1)).isoformat())
 
+    def test_since_widens_the_window_and_keeps_the_seven_day_rule(self):
+        reported = {B: {"reported_at": (NOW - timedelta(days=2)).isoformat()},
+                    C: {"reported_at": (NOW - timedelta(days=8)).isoformat()}}
+        visits = [visit(A, 1), visit(A, 50), visit(B, 30), visit(C, 60), visit(D, 80)]
+        review = abuse_review.build_review(visits, NOW, reported, no_dns, since=NOW - timedelta(hours=72))
+        self.assertEqual(ips_of(review), [A, C])
+        self.assertEqual(review["candidates"][0]["sessions"], 2)
+        self.assertEqual(review["candidates"][0]["first_seen"], (NOW - timedelta(hours=50)).isoformat())
+        self.assertEqual(review["left_out"]["reported in the last 7 days"], 1)
+        self.assertEqual(review["window_start"], (NOW - timedelta(hours=72)).isoformat())
+
     def test_busiest_ips_come_first(self):
         review = build([visit(A, 1), visit(B, 1), visit(B, 2)])
         self.assertEqual(ips_of(review), [B, A])
@@ -181,6 +192,14 @@ class SummaryTests(unittest.TestCase):
         self.assertIn("skip", line_scanner)
         self.assertIn("Censys", line_scanner)
 
+    def test_the_summary_names_the_window(self):
+        daily = abuse_review.summary_lines(self.review(), Path("/x/review.json"))[0]
+        self.assertIn("last 24 hours", daily)
+        longer = abuse_review.build_review([visit(A, 1)], NOW, {}, no_dns, since=NOW - timedelta(hours=70))
+        first = abuse_review.summary_lines(longer, Path("/x/review.json"))[0]
+        self.assertIn("since Nov 05 04:00 UTC", first)
+        self.assertNotIn("24 hours", first)
+
     def test_masking(self):
         self.assertEqual(abuse_review.mask("8.8.8.8"), "8.8.x.x")
         self.assertEqual(abuse_review.mask("2001:db8:1:2::5"), "2001:db8:x:x")
@@ -232,6 +251,44 @@ class ReviewMainTests(unittest.TestCase):
         self.run_main()
         saved = json.loads(self.out.read_text())
         self.assertEqual([c["ip"] for c in saved["candidates"]], [B])
+
+    def test_since_covers_everything_back_to_that_time(self):
+        self.run_main("--since", (NOW - timedelta(hours=48)).isoformat())
+        saved = json.loads(self.out.read_text())
+        self.assertEqual(saved["window_start"], (NOW - timedelta(hours=48)).isoformat())
+        (b,) = [c for c in saved["candidates"] if c["ip"] == B]
+        self.assertEqual(b["sessions"], 2, "the visit 30 hours ago is inside the window")
+
+    def test_since_takes_a_date_or_a_time_and_reads_it_as_utc(self):
+        for text, start in [("2026-11-07", datetime(2026, 11, 7, tzinfo=timezone.utc)),
+                            ("2026-11-06T03:28", datetime(2026, 11, 6, 3, 28, tzinfo=timezone.utc)),
+                            ("2026-11-06T03:28Z", datetime(2026, 11, 6, 3, 28, tzinfo=timezone.utc)),
+                            ("2026-11-05T22:28-05:00", datetime(2026, 11, 6, 3, 28, tzinfo=timezone.utc))]:
+            self.run_main("--since", text)
+            self.assertEqual(json.loads(self.out.read_text())["window_start"], start.isoformat(), text)
+
+    def test_since_refuses_a_time_in_the_future_or_older_than_the_logs_are_kept(self):
+        for text, why in [((NOW + timedelta(hours=1)).isoformat(), "in the future"),
+                          ((NOW - timedelta(days=31)).isoformat(), "30 days"),
+                          ("last week", "date")]:
+            errors = io.StringIO()
+            with self.assertRaises(SystemExit, msg=text), contextlib.redirect_stderr(errors):
+                self.run_main("--since", text)
+            self.assertIn(why, errors.getvalue(), text)
+            self.assertNotIn("unrecognized arguments", errors.getvalue())
+            self.assertFalse(self.out.exists(), f"a list was saved for {text}")
+
+    def test_since_looks_up_scanner_names_for_the_whole_window(self):
+        original, looked_up = abuse_review.forward_confirmed_name, []
+        abuse_review.forward_confirmed_name = lambda ip: looked_up.append(ip)
+        try:
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                abuse_review.main(["--logs", str(self.logs), "--since", (NOW - timedelta(hours=48)).isoformat()],
+                                  now=NOW)
+        finally:
+            abuse_review.forward_confirmed_name = original
+        self.assertEqual(sorted(set(looked_up)), sorted([A, B]))
 
     def test_the_daily_run_drops_record_entries_older_than_30_days(self):
         record = self.logs / "abuseipdb" / "reported.json"
@@ -337,6 +394,14 @@ class ReporterTests(unittest.TestCase):
         self.assertEqual(ask.asked, [])
         self.assertIn("Nothing was sent", shown)
         self.assertIsNone(FULL_IPV4.search(shown), shown)
+
+    def test_it_says_which_window_the_list_covers(self):
+        _, _, shown = self.run_main()
+        self.assertIn("for the 24 hours before it", shown)
+        self.save_review(abuse_review.build_review(self.visits, NOW, {}, no_dns, since=NOW - timedelta(hours=70)))
+        _, _, shown = self.run_main()
+        self.assertIn("covering Nov 05 04:00 to Nov 08 02:00 UTC", shown)
+        self.assertNotIn("24 hours", shown)
 
     def test_cancelling_sends_nothing_and_never_asks_for_the_key(self):
         post, _, shown = self.run_main("--send", answers=("", "no"))

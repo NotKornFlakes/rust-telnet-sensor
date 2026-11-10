@@ -15,7 +15,8 @@ What each report sends, and nothing else (POST https://api.abuseipdb.com/api/v2/
   - categories 18 Brute-Force and 23 IoT Targeted, the same for every IP,
   - a fixed comment for what the IP did, one of the three sentences in COMMENTS below, so it never
     holds a password, a command, an address, the honeypot's IP or any other IP,
-  - the time it was first seen in the last day, as the time of the attack.
+  - the time it was first seen in the list's window (the last day, or since the --since time the
+    list was built with), as the time of the attack.
 
 Before sending, every entry is checked again: it must be a public IP, not one of your own test
 IPs (read from the logs), with a known activity, known categories and a readable time. Research
@@ -159,6 +160,15 @@ def show(send, held):
         print(f"  Comment for {activity}: \"{COMMENTS[activity]}\"")
 
 
+def window_note(review):
+    """Which stretch of the logs the list covers, for the first line."""
+    try:
+        start, end, daily = abuse_review.window_of(review)
+    except (KeyError, TypeError, ValueError):
+        return "for a window it doesn't record"
+    return "for the 24 hours before it" if daily else f"covering {start:%b %d %H:%M} to {end:%b %d %H:%M} UTC"
+
+
 def error_detail(error):
     try:
         body = json.loads(error.read() or b"{}")
@@ -236,7 +246,7 @@ def main(argv=None, post=post_report, ask=input, ask_key=getpass.getpass, sleep=
     reported = abuse_review.load_reported(record_path, at)
 
     send, held = plan(review, own, reported, at, args.include_scanners)
-    print(f"Review list built {review.get('built_at', '?')[:16]} UTC, for the 24 hours before it. "
+    print(f"Review list built {review.get('built_at', '?')[:16]} UTC, {window_note(review)}. "
           f"{len(send)} to report, {len(held)} held back.")
     show(send, held)
     if not send:
