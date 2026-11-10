@@ -387,5 +387,69 @@ telnet_in
 6. Carry on with the roadmap: a fake web service with full request logging, then an offline
    report tool for the downloaded logs.
 
+## Update: Nov 7–10
+
+*Added 2026-11-10. Data from right after the study's last visit, 2026-11-06 15:34 UTC, to
+2026-11-10 19:45 UTC (100 hours), so the two leave no gap. Same server with the same settings,
+and the program hasn't restarted since Nov 3. Everything above covers Nov 3–6 only and is
+unchanged, apart from the two detection fixes described below.*
+
+| Headline | Nov 7–10 |
+| --- | --- |
+| Connections | 3,077 from 447 IP addresses |
+| Logins into the fake shell | 358 from 188 IP addresses |
+| Commands | 2,012, of which 107 were different |
+| Download attempts | 10 sessions from 6 IPs, naming 11 different addresses, 10 of them new |
+| Campaigns never seen before | 13 of 24, in 60 sessions from 14 IPs |
+| Outbound connections made by the honeypot | **0** |
+| Reported to AbuseIPDB | 49 IPs on Nov 8 and 103 on Nov 10 |
+
+A campaign is every shell session that sent exactly the same commands, with the probe's random
+tag removed, as in the notebook's section 7. "Never seen before" means in no shell session from
+Nov 3 to Nov 6.
+
+**What was new**
+
+- **Another NUL-word bot.** One IP, never seen before, sent `enable\0`, `system\0`, `shell\0`
+  and sometimes `sh\0` in 35 sessions on Nov 10, and every one was held for the full 30 seconds.
+  That's 3 of the 13 new campaigns. The Nov 3–6 bot came from another IP and sent `linuxshell\0`
+  second.
+- **BusyBox checks with a random word.** 12 sessions from 5 IPs sent `enable`, `system`, `shell`,
+  `sh`, then `/bin/busybox` with a random eight-character mix of letters and digits. From Nov 3
+  to Nov 6, bots used a name such as `SORA` there. In one of those sessions the word starts with
+  a lower-case letter, which the first version of detection 1 missed, because it wanted an
+  upper-case first letter. It now looks for an upper-case letter anywhere in the word.
+- **A new dropper, `telnet2.sh`,** in 3 sessions from 3 IPs on Nov 8 and Nov 10, each sent
+  straight after `enable`, `system`, `shell`, `sh`.
+- **FTP joined the fallbacks.** 6 of the 10 download sessions, from 5 IPs, also tried
+  `busybox ftpget`, which no session sent from Nov 3 to Nov 6. The first version of detection 2
+  missed it, because it didn't look for `ftpget`. It also missed a script written to standard
+  output when `-O-` came last on the line, as one of the new droppers did. Both are fixed.
+  Detection 3 already covered FTP, because it flags any new outbound connection except DNS and
+  NTP. [analysis/test_detections.py](analysis/test_detections.py) tests detections 1 and 2 as
+  published against the real command lines, masked.
+
+**New download URLs**, masked and defanged, with the day each was first seen. Their 4 servers were
+also named on their own, for TFTP or FTP, and a fifth server, `94[.]154[.]x[.]x`, only that way
+(Nov 10). That makes 10 new addresses on 5 new servers. The 11th address,
+`hxxp://160[.]119[.]x[.]x/bins/kla.sh`, was one of the 7 from Nov 3–6.
+
+```text
+hxxp://176[.]65[.]x[.]x/telnet2.sh   Nov 8
+hxxp://160[.]187[.]x[.]x/all.sh      Nov 9
+hxxp://37[.]221[.]x[.]x/all.sh       Nov 9
+hxxp://102[.]220[.]x[.]x/curl.sh     Nov 10
+hxxp://102[.]220[.]x[.]x/wget.sh     Nov 10
+```
+
+**Outbound: still 0.** For the whole window, the host firewall logged no blocked outbound
+connection, from the honeypot user or anything else, and the cloud firewall's egress log had no
+hits, though bots sent 66 download addresses to the shell.
+
+**AbuseIPDB.** On Nov 8, I reported the 49 IPs that got into the shell in the 24 hours before,
+each with the fixed comment for what it did
+([analysis/report_abuseipdb.py](analysis/report_abuseipdb.py)). On Nov 10, I reported 103 more
+that got in after those reports went out.
+
 *How the examples were prepared: every value in this report is a count or a masked pattern. Raw
 logs are never published, nothing in them is run or opened, and they're deleted after 30 days.*
