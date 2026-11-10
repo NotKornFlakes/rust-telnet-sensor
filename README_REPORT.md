@@ -402,7 +402,7 @@ unchanged, apart from the two detection fixes described below.*
 | Download attempts | 10 sessions from 6 IPs, naming 11 different addresses, 10 of them new |
 | Campaigns never seen before | 13 of 24, in 60 sessions from 14 IPs |
 | Outbound connections made by the honeypot | **0** |
-| Reported to AbuseIPDB | 49 IPs on Nov 8 and 103 on Nov 10 |
+| Reported to AbuseIPDB | 49 IPs on Nov 8 and 121 on Nov 10 |
 
 A campaign is every shell session that sent exactly the same commands, with the probe's random
 tag removed, as in the notebook's section 7. "Never seen before" means in no shell session from
@@ -425,6 +425,8 @@ Nov 3 to Nov 6.
   `busybox ftpget`, which no session sent from Nov 3 to Nov 6. The first version of detection 2
   missed it, because it didn't look for `ftpget`. It also missed a script written to standard
   output when `-O-` came last on the line, as one of the new droppers did. Both are fixed.
+  A known gap remains: a script with a generic name such as `all.sh`, saved to a file, isn't
+  caught, because matching any script fetched from a bare IP would also flag internal installers.
   Detection 3 already covered FTP, because it flags any new outbound connection except DNS and
   NTP. [analysis/test_detections.py](analysis/test_detections.py) tests detections 1 and 2 as
   published against the real command lines, masked.
@@ -448,7 +450,7 @@ hits, though bots sent 66 download addresses to the shell.
 
 **AbuseIPDB.** On Nov 8, I reported the 49 IPs that got into the shell in the 24 hours before,
 each with the fixed comment for what it did
-([analysis/report_abuseipdb.py](analysis/report_abuseipdb.py)). On Nov 10, I reported 103 more
+([analysis/report_abuseipdb.py](analysis/report_abuseipdb.py)). On Nov 10, I reported 121 more
 that got in after those reports went out.
 
 *How the examples were prepared: every value in this report is a count or a masked pattern. Raw
