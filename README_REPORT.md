@@ -95,14 +95,17 @@ hung up and 308 waited until the 30-second limit.
 | Break out of a router's limited menu | `enable`, `system`, `shell`, `sh`, `linuxshell`, sometimes ending in a NUL byte | T1059.008 Network Device CLI, T1059.004 Unix Shell | 2,349 | 211 |
 | Try a router CLI | `config terminal`, `start`, `su` | T1059.008 Network Device CLI | 588 | 58 |
 | Inject a shell into a ping tool | `ping ;sh`, also sent as `ping; sh` and `ping;sh` | T1059.004 Unix Shell | 137 | 117 |
-| Look around | `uname -m`, `cat /proc`, `cat /etc/passwd`, `id`, `ls /home` | T1082, T1087.001, T1033, T1083 | 257 | 117 |
+| Look around | `uname -m`, `cat /proc`, `cat /etc/passwd`, `id`, `ls /home` | T1082, T1087.001, T1033, T1083 | 258 | 118 |
 | Find a writable folder, then check with a hex `echo` | `>/var/run/.x&&cd /var/run;…`, `>/tmp/.ptmx && cd /tmp/` (below) | T1083 File and Directory Discovery | 221 | 60 |
-| Check for a real BusyBox | `/bin/busybox SORA`, or a random word | T1497.001 System Checks (closest fit) | 73 | 24 |
+| Check for a real BusyBox | `/bin/busybox SORA`, or a random word | T1497.001 System Checks (closest fit) | 82 | 28 |
 | Check that `echo` works | Hex `echo -e` markers, `echo PAYLOAD_WORKING` | T1497.001 System Checks (closest fit) | 16 | 12 |
 | The `SHELL_TEST` check | `echo SHELL_TEST`, then hang up | T1497.001 System Checks (closest fit) | 58 | 3 |
 | Download and run | `wget`, `curl`, `tftp` and `ftpget` fallbacks, `chmod 777`, run in the background | T1105 Ingress Tool Transfer, T1222.002, T1059.004 | 23 | 12 |
 | Remove rival bots | `killall -9` a list of other botnets' names, or a script that kills them | T1489 Service Stop (closest fit) | 2 | 2 |
 | Clean up | Delete the script after running it | T1070.004 File Deletion | 6 | 5 |
+
+A line that holds several commands also counts for any check or look-around in it, such as
+`ls /home; /bin/busybox BOTNET`.
 
 Examples, masked and defanged. IPs keep only their first two numbers, and IDs or file names that
 could identify this honeypot are replaced with `<id>` and `<name>`. Long lines are shortened with
@@ -159,12 +162,12 @@ hxxp://102[.]220[.]x[.]x/wget.sh                         Nov 10
 
 **What stands out**
 
-- **Most bots check before they commit, and a fixed-reply shell fails the check.** 339 of the 706
+- **Most bots check before they commit, and a fixed-reply shell fails the check.** 348 of the 706
   sessions with commands ran a check that only a real shell passes, because it needs the bot's own
   word repeated back. The honeypot never repeats input, by design: `echo` gets a blank line, and
   `/bin/busybox SORA` gets `busybox: applet not found` where a real device would say
-  `SORA: applet not found`. 335 of those 339 sessions ended on a check without trying a
-  download. Only 4 went on to download anyway.
+  `SORA: applet not found`. 341 of those 348 sessions ended on a check without trying a
+  download. Only 7 went on to download anyway.
 - **The playbook is old and stable.** Mirai's leaked source sends `enable`, `system`, `shell` and
   `sh` after logging in, then `/bin/busybox <WORD>`
   ([source code review](https://medium.com/@cjbarker/mirai-ddos-source-code-review-57269c4a68f)).

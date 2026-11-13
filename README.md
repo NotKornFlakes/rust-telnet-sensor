@@ -16,7 +16,7 @@ and that guide is below, under "How it was built".
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/funnel-dark.png">
-  <img src="docs/images/funnel-light.png" alt="Funnel chart, Nov 3–10: 5,527 connections; 4,805 sent a login (86.9%); 839 got into the shell (15.2%); 706 sent a command (12.8%); 339 ran a real-shell check (6.1%); 23 reached a download (0.4%).">
+  <img src="docs/images/funnel-light.png" alt="Funnel chart, Nov 3–10: 5,527 connections; 4,805 sent a login (86.9%); 839 got into the shell (15.2%); 706 sent a command (12.8%); 348 ran a real-shell check (6.3%); 23 reached a download (0.4%).">
 </picture>
 
 **Were these IPs already known?** I checked all 901 IPs that visited from Nov 2 to Nov 10 against
