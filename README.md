@@ -4,26 +4,26 @@
 
 By [Timothy Fletcher](https://timfletcher.tech)
 
-A medium-interaction telnet honeypot written in Rust, run on Google Cloud for 86 hours to
+A medium-interaction telnet honeypot written in Rust, run on Google Cloud for 186 hours to
 record what IoT botnets do after they log in. 18 common factory-default logins get into a
 shell that's entirely fake: every reply is fixed text compiled into the program, and nothing
 a visitor sends is ever run or fetched. It was built stage by stage as a way to learn Rust,
 and that guide is below, under "How it was built".
 
-- **2,450 connections** from 364 IP addresses in 86 hours
-- **481 fake-shell sessions** and 1,772 commands
-- **13 download attempts** and **0 outbound connections** from the honeypot
+- **5,527 connections** from 790 IP addresses in 186 hours, Nov 3 to Nov 10
+- **839 fake-shell sessions** and 3,784 commands
+- **23 download attempts** and **0 outbound connections** from the honeypot
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/funnel-dark.png">
-  <img src="docs/images/funnel-light.png" alt="Funnel chart, Nov 3–6: 2,450 connections; 2,132 sent a login (87%); 481 got into the shell (19.6%); 414 sent a command (16.9%); 165 ran a real-shell check (6.7%); 13 reached a download (0.5%).">
+  <img src="docs/images/funnel-light.png" alt="Funnel chart, Nov 3–10: 5,527 connections; 4,805 sent a login (86.9%); 839 got into the shell (15.2%); 706 sent a command (12.8%); 339 ran a real-shell check (6.1%); 23 reached a download (0.4%).">
 </picture>
 
-**Were these IPs already known?** I checked all 478 IPs that visited from Nov 2 to Nov 6
-against AbuseIPDB. 472 had reports from the past year, at least 417 of them from before the
-honeypot first saw them, and the other 6 had none in the past year. 3 of the 7 IPs that tried a
-download had no reports until after they reached the honeypot, so an IP blocklist wouldn't have
-stopped them when they arrived.
+**Were these IPs already known?** I checked all 901 IPs that visited from Nov 2 to Nov 10 against
+AbuseIPDB. Of the 330 that got into the fake shell, 328 had reports from the past year, at least 316
+of them from before the honeypot first saw them. All 901 look the same: 891 had reports from the
+past year, at least 867 from before the honeypot first saw them, and the other 10 had none in the
+past year. All 12 IPs that tried a download had been reported before they arrived.
 
 Read [the full report](README_REPORT.md) or visit [the project page](https://timfletcher.tech/honeypot/).
 
