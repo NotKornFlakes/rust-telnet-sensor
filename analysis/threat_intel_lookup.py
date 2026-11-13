@@ -6,6 +6,7 @@ Run it by hand from the repository root:
     python3 analysis/threat_intel_lookup.py           # shows what it would look up, sends nothing
     python3 analysis/threat_intel_lookup.py --send    # does the lookups after you type yes
     python3 analysis/threat_intel_lookup.py --first-reporter --send   # who reported each IP first
+    python3 analysis/threat_intel_lookup.py --older-reports --send    # settle what the lists can't
 
 What it sends, and nothing else:
   - URLhaus, with your Auth-Key: each download address to the URL lookup
@@ -25,10 +26,20 @@ With --first-reporter it looks up, instead, each IP that analysis/report_abuseip
 in ~/honeypot-logs/abuseipdb/reported.json, with the same AbuseIPDB check, and says who reported
 it first: us, someone else, or can't tell. Our report is the one with the exact comment and
 categories we recorded, dated when the reporter ran or at the attack time it sent (AbuseIPDB may
-use either), and any other report from the same account counts as ours too. AbuseIPDB lists at
-most 10,000 reports per IP, so when it has more than it lists and ours is the earliest listed,
-the answer is "can't tell": the missing ones may be older. "First" means first in the past year,
-the furthest back AbuseIPDB goes. Other reporters' comments are never shown or saved.
+use either), and any other report from the same account counts as ours too. AbuseIPDB lists
+only the newest 100 reports per IP, so when it has more than it lists and ours is the earliest
+listed, or isn't listed at all, the answer is "can't tell": the missing ones are older. "First"
+means first in the past year, the furthest back AbuseIPDB goes. Other reporters' comments are
+never shown or saved.
+
+With --older-reports it makes one more check for each IP the others couldn't settle. One is an IP
+with more reports than the newest 100 AbuseIPDB lists, all of the listed ones from after the
+honeypot first saw it. That check asks only how many reports came in since a day or more before
+the honeypot first saw the IP (maxAgeInDays, with no report details). If the year check counted
+more, the rest are older, so the IP was reported before. It does the same for an IP you reported
+where --first-reporter couldn't tell who was first, counting from the earliest date AbuseIPDB may
+give your report. Reports only pile up, so the surplus is a lower bound, unless some were deleted
+in between.
 
 Results go to ~/honeypot-logs/intel/lookups.json, readable only by you. They hold full IPs and
 addresses, so safety rule 4 applies: never commit or publish the file. Entries older than 30 days
@@ -40,6 +51,7 @@ import argparse
 import getpass
 import ipaddress
 import json
+import math
 import os
 import re
 import sys
@@ -60,7 +72,10 @@ KEEP_DAYS = 30  # the same as deploy/daily-logs.sh
 OWN_TEST_PASSWORD = "not-on-the-list"  # my own test visits used this password
 REPORT_DAYS = 365  # the longest look-back AbuseIPDB allows
 FREE_DAILY_CHECKS = 1000
-LISTED_REPORTS_CAP = 10_000  # the most reports AbuseIPDB lists for one IP
+# AbuseIPDB's check lists only the newest 100 reports for one IP. Its docs say 10,000, but in the
+# Nov 10 lookups no list held more than 100, and every IP with more listed exactly 100.
+LISTED_REPORTS_CAP = 100
+MARGIN_DAYS = 1  # --older-reports counts from a day further back, in case AbuseIPDB rounds days
 # Our report is dated when the reporter ran, give or take the clocks, or at the attack time it sent.
 # The reporter records its start time, and a long run sends its last report a while later.
 CLOCK_SLACK = timedelta(minutes=5)
@@ -178,12 +193,15 @@ def read_logs(log_dir):
     return ips, addresses, len(own), left_out
 
 
+SECTIONS = ("urlhaus", "abuseipdb", "first_reporter", "abuseipdb_older", "first_reporter_older")
+
+
 def load_results(path):
     if not path.exists():
-        return {"format": 1, "urlhaus": {}, "abuseipdb": {}, "first_reporter": {}}
+        return {"format": 1, **{section: {} for section in SECTIONS}}
     data = json.loads(path.read_text())
     cutoff = now() - timedelta(days=KEEP_DAYS)
-    for section in ("urlhaus", "abuseipdb", "first_reporter"):
+    for section in SECTIONS:
         data[section] = {k: r for k, r in data.get(section, {}).items()
                          if parse_time(r["checked_at"]) >= cutoff}
     return data
@@ -305,6 +323,9 @@ def first_reporter(ours, data):
               "ours_found": False, "others_before_us": None, "first_other_at": None}
     matches = sorted((r for r in reports if looks_ours(r)), key=lambda r: abs(at(r) - reported_at))
     if not matches:
+        if len(reports) < total:
+            return {**result, "first": "can't tell",
+                    "why": f"our report isn't among the {len(reports)} newest that AbuseIPDB lists, of {total:,}"}
         return {**result, "first": "can't tell", "why": "our report isn't listed"}
     mine = matches[0]
     our_id = mine.get("reporterId")
@@ -321,7 +342,7 @@ def first_reporter(ours, data):
                 "why": f"{len(others)} report(s) from others before ours, the first on {others[0]:%b %d}"}
     if len(reports) < total:
         return {**result, "first": "can't tell",
-                "why": f"AbuseIPDB lists at most {LISTED_REPORTS_CAP:,} reports and has {total:,} for this IP, "
+                "why": f"AbuseIPDB lists only the newest {LISTED_REPORTS_CAP} reports and has {total:,} for this IP, "
                        "so older ones may be missing"}
     return {**result, "first": "us", "why": "no listed report from anyone else before ours"}
 
@@ -353,6 +374,130 @@ def first_reporter_checks(todo, key, results, out_file, limit):
         time.sleep(0.2)
     print(f"  {done} IPs checked this run." + (f" AbuseIPDB says {remaining} checks are left today."
                                               if remaining is not None else ""))
+
+
+def days_back(since, at):
+    """maxAgeInDays for a count that starts at least MARGIN_DAYS before `since`, within the year."""
+    return max(1, min(math.ceil((at - since) / timedelta(days=1)) + MARGIN_DAYS, REPORT_DAYS))
+
+
+def count_older(year_total, recent_total, days):
+    """What a count over the last `days` days says about the reports from before that window.
+
+    year_total comes from an earlier check of the whole year, recent_total from a later one over
+    `days` days. Reports only pile up, so any surplus in the year is older than the window. A
+    window as long as the year shows nothing that way.
+    """
+    surplus = year_total - recent_total if days < REPORT_DAYS else 0
+    return {"days": days, "year_total": year_total, "recent_total": recent_total,
+            "older": surplus > 0, "older_at_least": max(surplus, 0)}
+
+
+def older_todo(results, ours):
+    """The checks --older-reports would make: (section, IP) -> (since, year total, year check time)."""
+    todo = {}
+    for ip, r in results["abuseipdb"].items():
+        if (r.get("total_reports") or 0) > LISTED_REPORTS_CAP and not r.get("reports_before_us"):
+            if results["abuseipdb_older"].get(ip, {}).get("year_checked_at") != r["checked_at"]:
+                todo[("abuseipdb_older", ip)] = (parse_time(r["first_seen_here"]), r["total_reports"],
+                                                 r["checked_at"])
+    for ip, r in results["first_reporter"].items():
+        o = ours.get(ip)
+        if (r["first"] == "can't tell" and r["listed"] < r["total_reports"] and o
+                and o["reported_at"] == r["our_report_at"]
+                and results["first_reporter_older"].get(ip, {}).get("year_checked_at") != r["checked_at"]):
+            # AbuseIPDB may date our report at the attack time we sent, which came first.
+            since = min(t for t in (parse_time(o["reported_at"]), parse_time(o.get("timestamp"))) if t)
+            todo[("first_reporter_older", ip)] = (since, r["total_reports"], r["checked_at"])
+    return todo
+
+
+def older_reports_checks(todo, key, results, out_file, limit):
+    done, remaining = 0, None
+    for (section, ip), (since, year_total, year_checked_at) in todo.items():
+        if done >= limit:
+            print(f"  Stopped at --limit {limit}.")
+            break
+        at = now()
+        days = days_back(since, at)
+        query = urllib.parse.urlencode({"ipAddress": ip, "maxAgeInDays": days})  # no verbose
+        try:
+            data, headers = call("GET", ABUSEIPDB_CHECK, {"Key": key, "Accept": "application/json"},
+                                 query=query)
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                reset = (e.headers or {}).get("X-RateLimit-Reset")
+                when = datetime.fromtimestamp(int(reset), timezone.utc).strftime("%b %d %H:%M UTC") if reset else "later"
+                print(f"  AbuseIPDB's daily limit is used up. Run this again after {when}; it carries on "
+                      "where it stopped.")
+                break
+            raise
+        results[section][ip] = {"checked_at": at.isoformat(), "since": since.isoformat(),
+                                "year_checked_at": year_checked_at,
+                                **count_older(year_total, data["data"].get("totalReports") or 0, days)}
+        done += 1
+        remaining = headers.get("X-RateLimit-Remaining", remaining)
+        if done % 25 == 0:
+            save_results(out_file, results)
+            print(f"  {done} checked…")
+        time.sleep(0.2)
+    print(f"  {done} IPs checked this run." + (f" AbuseIPDB says {remaining} checks are left today."
+                                              if remaining is not None else ""))
+
+
+def older_reports_main(args):
+    results = load_results(args.out)
+    record = args.logs / "abuseipdb" / "reported.json"
+    ours = json.loads(record.read_text()).get("reports", {}) if record.exists() else {}
+    ips = read_logs(args.logs)[0]
+    unchecked = sum(ip not in results["abuseipdb"] for ip in ips)
+    if unchecked:
+        print(f"{unchecked} IP{'s' if unchecked != 1 else ''} in the logs {'have' if unchecked != 1 else 'has'} "
+              "no year check yet. Run this without --older-reports first, then again with it.")
+    todo = older_todo(results, ours)
+    n_seen = sum(section == "abuseipdb_older" for section, _ in todo)
+    n = min(len(todo), args.limit)
+    print(f"AbuseIPDB: {n} check{'s' if n != 1 else ''}, one per IP: {n_seen} whose {LISTED_REPORTS_CAP} listed "
+          f"reports all came after the honeypot first saw them, and {len(todo) - n_seen} you reported where it "
+          "couldn't be told who was first. Each asks only how many reports came in since a day or more before "
+          f"that moment, with no report details. A free account has {FREE_DAILY_CHECKS:,} checks a day; a later "
+          "run carries on where this one stops.")
+    if not todo:
+        print("\nNothing new to look up.")
+        return
+    if not args.send:
+        print("\nNothing was sent. Add --send to do these lookups.")
+        return
+    if not args.yes and input("\nSend these lookups? Type yes: ").strip().lower() != "yes":
+        print("Nothing was sent.")
+        return
+    try:
+        older_reports_checks(todo, get_key("ABUSEIPDB_KEY", "AbuseIPDB API"), results, args.out, args.limit)
+    except urllib.error.HTTPError as e:
+        print(f"Stopped: {e.code} {e.reason} from AbuseIPDB. 401 or 403 usually means a wrong key.",
+              file=sys.stderr)
+    except urllib.error.URLError as e:
+        print(f"Stopped: couldn't reach AbuseIPDB ({e.reason}).", file=sys.stderr)
+    finally:
+        save_results(args.out, results)
+
+    print(f"\nSaved to {args.out}. IPs masked to two numbers:")
+    found = {}
+    for (section, ip), (_, _, year_checked_at) in todo.items():
+        r = results[section].get(ip)
+        if r and r["year_checked_at"] == year_checked_at:
+            found.setdefault(section, []).append(r)
+            what = ("reported before the honeypot saw it" if section == "abuseipdb_older"
+                    else "someone else reported it before you")
+            verdict = what if r["older"] else "still can't tell"
+            print(f"  {abuse_review.mask(ip):15} {r['recent_total']:>6,} in the last {r['days']} days, "
+                  f"{r['year_total']:,} in the year: {verdict}")
+    for section, label in (("abuseipdb_older", "Reported before the honeypot first saw them"),
+                           ("first_reporter_older", "Someone else first, where it couldn't be told")):
+        rs = found.get(section, [])
+        if rs:
+            older = sum(r["older"] for r in rs)
+            print(f"{label}: shown for {older} of {len(rs)}, still can't tell for {len(rs) - older}.")
 
 
 def first_reporter_main(args):
@@ -408,9 +553,15 @@ def main(argv=None):
     parser.add_argument("--out", type=Path, default=OUT_FILE)
     parser.add_argument("--first-reporter", action="store_true",
                         help="check who reported each IP in reported.json first, instead of the usual lookups")
+    parser.add_argument("--older-reports", action="store_true",
+                        help="count, for the IPs the lists can't settle, the reports from before, instead")
     args = parser.parse_args(argv)
+    if args.first_reporter and args.older_reports:
+        parser.error("use --first-reporter or --older-reports, not both")
     if args.first_reporter:
         return first_reporter_main(args)
+    if args.older_reports:
+        return older_reports_main(args)
 
     ips, found, own_count, left_out = read_logs(args.logs)
     results = load_results(args.out)
