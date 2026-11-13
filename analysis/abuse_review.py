@@ -7,6 +7,7 @@ repository root:
     python3 analysis/abuse_review.py            # builds the list and shows it, masked
     python3 analysis/abuse_review.py --no-dns   # the same, without reverse DNS lookups
     python3 analysis/abuse_review.py --since 2026-11-08T03:28Z   # everything since then
+    python3 analysis/abuse_review.py --scanners --since 2026-11-02   # which visitors were scanners
 
 A candidate is an IP that got into the fake shell in the last 24 hours, or since the time given
 with --since, such as the last run when you've missed a few days. The time is UTC unless it names
@@ -17,6 +18,12 @@ any IP the reporter recorded as reported in the last 7 days, however long the wi
 Research scanners such as Shodan and Censys are marked "skip", found by Censys's published ranges
 or by a reverse DNS name that resolves back to the same IP, so a PTR record alone can't fake one.
 The reverse lookups go to your usual DNS resolver, and the IP's owner may see a query for it.
+
+With --scanners it builds no review list. Instead it checks every IP that visited in the window,
+whatever it did, the same way, for the notebook's threat-intel section. That can be hundreds of
+lookups, so it waits up to SCANNER_LIST_DNS_TIMEOUT seconds for them, and marks an IP whose lookup
+didn't finish as unchecked. The result goes to ~/honeypot-logs/intel/scanners.json, readable only
+by you. It holds full IPs, like the review list.
 
 This never reports or sends anything: there's no HTTP code here at all. The full list goes to
 ~/honeypot-logs/abuseipdb/review.json, readable only by you, and the screen shows IPs masked to
@@ -34,6 +41,7 @@ import socket
 import sys
 import threading
 import time
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -64,8 +72,12 @@ SCANNER_NETWORKS = [(ipaddress.ip_network(net), "Censys (published range)") for 
     "2602:80d:1004::/112",
 )]
 # Research scanners that name their machines under these domains. Not a complete list: add to it.
-SCANNER_DOMAINS = ("shodan.io", "censys-scanner.com", "shadowserver.org", "binaryedge.ninja",
-                   "stretchoid.com", "internet-measurement.com", "onyphe.net")
+# shadowserver.io is registered to The Shadowserver Foundation, like shadowserver.org (WHOIS and
+# RDAP, checked 2026-11-13).
+SCANNER_DOMAINS = ("shodan.io", "censys-scanner.com", "shadowserver.org", "shadowserver.io",
+                   "binaryedge.ninja", "stretchoid.com", "internet-measurement.com", "onyphe.net")
+# --scanners looks up every visitor, many more IPs than a day's shell logins, so it waits longer.
+SCANNER_LIST_DNS_TIMEOUT = 300
 
 
 def now():
@@ -134,11 +146,19 @@ def forward_confirmed_name(ip, gethostbyaddr=socket.gethostbyaddr, getaddrinfo=s
     return name.rstrip(".").lower() if ip in forward else None
 
 
-def scanner_of(ip, resolve):
+def range_scanner(ip):
+    """The scanner whose published range holds the IP, or None. Needs no lookup."""
     address = ipaddress.ip_address(ip)
     for network, label in SCANNER_NETWORKS:
         if address.version == network.version and address in network:
             return label
+    return None
+
+
+def scanner_of(ip, resolve):
+    label = range_scanner(ip)
+    if label:
+        return label
     name = resolve(ip)
     if name:
         for domain in SCANNER_DOMAINS:
@@ -150,8 +170,15 @@ def scanner_of(ip, resolve):
 def dns_resolver(ips):
     """Forward-confirmed names for all the IPs, giving up after DNS_TIMEOUT seconds in total.
 
-    The threads are daemons, so a lookup that hangs can't stop the script from finishing. An IP
-    whose lookup didn't finish in time just isn't recognised as a scanner.
+    An IP whose lookup didn't finish in time just isn't recognised as a scanner.
+    """
+    return dns_names(ips, DNS_TIMEOUT).get
+
+
+def dns_names(ips, timeout):
+    """{IP: forward-confirmed name or None} for each lookup that finished within `timeout` seconds.
+
+    The threads are daemons, so a lookup that hangs can't stop the script from finishing.
     """
     todo, names = queue.Queue(), {}
     for ip in ips:
@@ -168,10 +195,10 @@ def dns_resolver(ips):
     threads = [threading.Thread(target=work, daemon=True) for _ in range(DNS_THREADS)]
     for t in threads:
         t.start()
-    deadline = time.monotonic() + DNS_TIMEOUT
+    deadline = time.monotonic() + timeout
     for t in threads:
         t.join(max(0, deadline - time.monotonic()))
-    return dict(names).get
+    return dict(names)
 
 
 def activity_of(sessions):
@@ -222,6 +249,49 @@ def build_review(visits, at, reported, resolve, since=None):
         "window_end": at.isoformat(), "left_out": {k: len(v) for k, v in left_out.items()},
         "candidates": candidates,
     }
+
+
+def visitor_ips(visits, start, at):
+    """Every public IP that visited between start and at, whatever it did, minus my own test IPs."""
+    own = own_ips(visits)
+    return {v["source_ip"] for v in visits if v["source_ip"] not in own and is_public_ip(v["source_ip"])
+            and start <= datetime.fromtimestamp(v["time"], timezone.utc) <= at}
+
+
+def build_scanner_list(ips, names, start, at):
+    """Which of the IPs are research scanners. `names` holds the reverse lookups that finished.
+
+    "checked" is false for an IP whose lookup didn't finish or wasn't made: it may be a scanner
+    that isn't recognised.
+    """
+    return {"format": 1, "built_at": at.isoformat(), "window_start": start.isoformat(),
+            "window_end": at.isoformat(),
+            "ips": {ip: {"scanner": scanner_of(ip, names.get),
+                         "checked": range_scanner(ip) is not None or ip in names} for ip in sorted(ips)}}
+
+
+def scanner_list(args, start, at):
+    """--scanners: check every visitor in the window, instead of building the review list."""
+    ips = visitor_ips(read_visits(args.logs), start, at)
+    to_look_up = sorted(ip for ip in ips if range_scanner(ip) is None)
+    names = {} if args.no_dns else dns_names(to_look_up, SCANNER_LIST_DNS_TIMEOUT)
+    found = build_scanner_list(ips, names, start, at)
+    path = args.logs / "intel" / "scanners.json"
+    save_private(path, found)
+    window = "in the last 24 hours" if args.since is None else f"since {start:%b %d %H:%M} UTC"
+    scanners = Counter(r["scanner"] for r in found["ips"].values() if r["scanner"])
+    lines = [f"Research scanners: {sum(scanners.values())} of the {len(ips)} IPs that visited {window}."]
+    lines += [f"  {n:5}  {label}" for label, n in scanners.most_common()]
+    unfinished = len(to_look_up) - len(names)
+    if args.no_dns:
+        lines.append("  No reverse lookups (--no-dns), so only the published ranges were checked.")
+    elif unfinished:
+        lines.append(f"  {unfinished} reverse lookup{'s' if unfinished != 1 else ''} didn't finish in time, so "
+                     f"{'those IPs' if unfinished != 1 else 'that IP'} may be a scanner not recognised. "
+                     "Run it again to retry.")
+    lines.append(f"  Full IPs are only in {path}. Nothing was sent"
+                 + ("." if args.no_dns else " except the reverse DNS lookups."))
+    print("\n".join(lines))
 
 
 def window_of(review):
@@ -285,6 +355,9 @@ def main(argv=None, now=now):
     parser.add_argument("--no-dns", action="store_true", help="skip the reverse DNS lookups for scanners")
     parser.add_argument("--since", type=parse_since, metavar="TIME",
                         help="cover everything since this UTC date or time, instead of the last 24 hours")
+    parser.add_argument("--scanners", action="store_true",
+                        help="instead of the review list, check every visitor for research scanners, "
+                             "into intel/scanners.json")
     args = parser.parse_args(argv)
     at = now() if callable(now) else now
     if args.since is not None and args.since > at:
@@ -292,6 +365,8 @@ def main(argv=None, now=now):
     if args.since is not None and args.since < at - timedelta(days=KEEP_DAYS):
         parser.error(f"--since can't be more than {KEEP_DAYS} days back, because older logs are deleted")
     start = at - WINDOW if args.since is None else args.since
+    if args.scanners:
+        return scanner_list(args, start, at)
     folder = args.logs / "abuseipdb"
     visits = read_visits(args.logs)
     record = folder / "reported.json"
