@@ -4,8 +4,8 @@
 
 By [Timothy Fletcher](https://timfletcher.tech)
 
-A medium-interaction telnet honeypot written in Rust, run on Google Cloud for 186 hours to
-record what IoT botnets do after they log in. 18 common factory-default logins get into a
+A medium-interaction telnet honeypot written in Rust, run on Google Cloud from Nov 3 to Nov 22,
+2026, to record what IoT botnets do after they log in. The report covers the first 186 hours. 18 common factory-default logins get into a
 shell that's entirely fake: every reply is fixed text compiled into the program, and nothing
 a visitor sends is ever run or fetched. It was built stage by stage as a way to learn Rust,
 and that guide is below, under "How it was built".
