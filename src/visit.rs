@@ -32,6 +32,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 
 use crate::fake_shell::ShellSession;
+use crate::fake_web::HttpRequest;
 use crate::login::{
     LOGIN_PROMPT, PASSWORD_PROMPT, REJECTION, ask, escape_for_log, strip_line_ending,
 };
@@ -59,6 +60,9 @@ pub enum Outcome {
     /// They typed a login from the list and got the fake shell from Stage 7. How the session
     /// ended is in the visit's `shell`.
     LoggedIn,
+    /// They sent a whole request to one of the other fake services: a web request from Stage 8,
+    /// or an SSH version line from Stage 10. What they sent is in `http` or `client_banner`.
+    Requested,
 }
 
 /// One connection to the honeypot, and what we learned from it.
@@ -77,6 +81,11 @@ pub enum Outcome {
 /// a server with the fake shell on, and `shell` is only there for visits that got in.
 /// `skip_serializing_if` leaves them out of the JSON otherwise, so those lines look as they always
 /// did.
+///
+/// `service`, `http` and `client_banner` come from Stages 8 and 10. `service` names the fake
+/// service a visit came to, like `"http"` or `"ftp"`, and it's left out for the telnet login, so
+/// those lines still look as they always did. `http` is the web request from Stage 8, and
+/// `client_banner` is the first line an SSH client sent in Stage 10.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Visit {
     pub(crate) time: u64,
@@ -88,6 +97,12 @@ pub struct Visit {
     pub(crate) telnet: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) shell: Option<ShellSession>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) service: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) http: Option<HttpRequest>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) client_banner: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -153,6 +168,9 @@ impl Visit {
             outcome: Outcome::Left,
             telnet: None,
             shell: None,
+            service: None,
+            http: None,
+            client_banner: None,
         }
     }
 
@@ -342,6 +360,9 @@ mod tests {
             password: None,
             telnet: None,
             shell: None,
+            service: None,
+            http: None,
+            client_banner: None,
         }
     }
 

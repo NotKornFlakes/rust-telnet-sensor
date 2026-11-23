@@ -343,10 +343,22 @@ pub fn screen_line(visit: &Visit) -> String {
     };
     let line = format!("{date} {outcome:?} from {ip} user={username} password={password}");
     // Stage 7: a session only ever shows as counts, never what was typed.
-    match &visit.shell {
+    let mut line = match &visit.shell {
         Some(session) => format!("{line} {}", session.screen_summary()),
         None => line,
+    };
+    // Stages 8 and 10: which service it was, the method and path of a web request, and only the
+    // size of what an SSH client sent.
+    if let Some(service) = visit.service {
+        line.push_str(&format!(" service={service}"));
     }
+    if let Some(request) = &visit.http {
+        line.push_str(&format!(" {}", request.screen_summary()));
+    }
+    if let Some(banner) = &visit.client_banner {
+        line.push_str(&format!(" banner_bytes={}", banner.len()));
+    }
+    line
 }
 
 // ---------------------------------------------------------------------------
@@ -424,6 +436,9 @@ mod tests {
             password: Some("hunter2".to_string()),
             telnet: None,
             shell: None,
+            service: None,
+            http: None,
+            client_banner: None,
         }
     }
 

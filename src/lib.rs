@@ -8,7 +8,10 @@
 
 pub mod deploy;
 pub mod fake_shell;
+pub mod fake_web;
 pub mod log_files;
 pub mod login;
+pub mod report;
 pub mod server;
+pub mod services;
 pub mod visit;

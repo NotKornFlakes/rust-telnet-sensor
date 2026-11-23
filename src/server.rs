@@ -33,7 +33,9 @@ use chrono::NaiveDate;
 
 use crate::deploy::{RateLimit, current_minute};
 use crate::fake_shell::{Credentials, SessionEnd, ShellBudget, TELNET_OPENING, TelnetFilter};
+use crate::fake_web::WEB_SERVICE;
 use crate::log_files::{DailyLog, screen_line, today};
+use crate::services::FakeService;
 use crate::visit::{Outcome, Visit, append_visit, outcome_of_error};
 
 /// The most visitors handled at once. Each one gets a thread.
@@ -240,6 +242,35 @@ pub fn run_shell_visit(
             Some(session) => session.ended = SessionEnd::TimedOut,
             None => visit.outcome = Outcome::TimedOut,
         }
+    }
+}
+
+// This is a worked example for Stage 8. It's `run_visit` for the fake web service. The reader and
+// the writer share one deadline, as in `run_shell_visit`, so a request that drips in slowly, or a
+// visitor who reads the page slowly, still can't hold a place for longer than a login can.
+pub fn run_web_visit(visit: &mut Visit, stream: &TcpStream, time_limit: Duration) {
+    let mut reader = TimeLimited::new(stream, time_limit);
+    let mut writer = WriteLimited::new(stream, reader.deadline);
+    visit.run_web_request(&mut reader, &mut writer);
+    if reader.timed_out && visit.http.is_none() {
+        visit.outcome = Outcome::TimedOut;
+    }
+}
+
+// This is a worked example for Stage 10. It runs any `FakeService` with the same deadline for
+// reading and writing as the others. It doesn't know or care which service it's running.
+pub fn run_service_visit(
+    visit: &mut Visit,
+    stream: &TcpStream,
+    time_limit: Duration,
+    service: &dyn FakeService,
+) {
+    let limited = TimeLimited::new(stream, time_limit);
+    let mut writer = WriteLimited::new(stream, limited.deadline);
+    let mut reader = BufReader::new(limited);
+    service.run(visit, &mut reader, &mut writer);
+    if reader.get_ref().timed_out && visit.outcome == Outcome::Left {
+        visit.outcome = Outcome::TimedOut;
     }
 }
 
@@ -456,6 +487,7 @@ pub struct Shared {
     time_limit: Duration,
     rate: Option<Arc<Mutex<RateLimit>>>,
     shell: Option<Arc<FakeShell>>,
+    web: Option<Arc<Mutex<ShellBudget>>>,
 }
 
 /// What the threads share for the fake shell from Stage 7.
@@ -497,6 +529,7 @@ impl Shared {
             time_limit,
             rate: None,
             shell: None,
+            web: None,
         })
     }
 
@@ -513,6 +546,30 @@ impl Shared {
             budget: Mutex::new(budget),
         }));
         self
+    }
+
+    /// Turns on the fake web service from Stage 8, with its own daily budget. Without this,
+    /// `handle_web_visit` closes every connection without reading it.
+    pub fn with_fake_web(mut self, budget: ShellBudget) -> Shared {
+        self.web = Some(Arc::new(Mutex::new(budget)));
+        self
+    }
+
+    // Whether the web service is on and this address still has room in its budget.
+    fn web_open_for(&self, ip: IpAddr) -> bool {
+        match &self.web {
+            Some(budget) => lock(budget).has_room(ip, today()),
+            None => false,
+        }
+    }
+
+    // A web visit costs what its log line takes up. The page going back is small and the same
+    // every time, so the cap on visits per minute already keeps that cheap.
+    fn charge_for_request(&self, visit: &Visit) {
+        if let (Some(budget), Some(_)) = (&self.web, &visit.http) {
+            let logged = visit.to_json_line().map_or(0, |line| line.len());
+            lock(budget).spend(visit.source_ip, today(), logged as u64);
+        }
     }
 
     // Gives back the list of logins if the shell is on and this address still has room.
@@ -590,8 +647,12 @@ pub fn handle_visit(stream: &TcpStream, ip: IpAddr, shared: &Shared) {
         None => run_visit(&mut visit, stream, shared.time_limit),
     }
     shared.charge_for_session(&visit);
+    record_and_show(&visit, shared);
+}
 
-    match write_to_log(&visit, shared) {
+// The end of every visit, whichever service it came to: the log, then the screen.
+pub fn record_and_show(visit: &Visit, shared: &Shared) {
+    match write_to_log(visit, shared) {
         Ok(true) => {}
         Ok(false) => {
             shared.warn_once_a_day("Today's log is full, so visits aren't being recorded.")
@@ -605,7 +666,26 @@ pub fn handle_visit(stream: &TcpStream, ip: IpAddr, shared: &Shared) {
             "Refused {refused} connection(s) since the last visit."
         ));
     }
-    shared.show(screen_line(&visit));
+    shared.show(screen_line(visit));
+}
+
+// This is a worked example for Stage 8. It's `handle_visit` for the fake web service, with the same
+// limits. A visit from an address that has used up its share of the day is closed without reading
+// anything, and it's still logged, as a visit that sent nothing.
+pub fn handle_web_visit(stream: &TcpStream, ip: IpAddr, shared: &Shared) {
+    if shared.over_rate_limit(ip) {
+        shared.note_refused();
+        return;
+    }
+
+    let mut visit = Visit::new(SystemTime::now(), ip);
+    if shared.web_open_for(ip) {
+        run_web_visit(&mut visit, stream, shared.time_limit);
+    } else {
+        visit.service = Some(WEB_SERVICE);
+    }
+    shared.charge_for_request(&visit);
+    record_and_show(&visit, shared);
 }
 
 /// EXERCISE 9: accept one connection and handle it on its own thread.
@@ -645,6 +725,47 @@ pub fn serve_next(listener: &TcpListener, shared: &Shared) -> io::Result<()> {
             thread::Builder::new().spawn(move || {
                 let _slot = slot;
                 handle_visit(&stream, ip, &shared);
+            })?;
+        }
+    }
+    Ok(())
+}
+
+// This is a worked example for Stage 10. It's `handle_visit` for any `FakeService`. What these
+// services store is small and has its own limits, so the cap on visits per minute and the log's
+// daily budget are all they need.
+pub fn handle_service_visit(
+    stream: &TcpStream,
+    ip: IpAddr,
+    shared: &Shared,
+    service: &dyn FakeService,
+) {
+    if shared.over_rate_limit(ip) {
+        shared.note_refused();
+        return;
+    }
+    let mut visit = Visit::new(SystemTime::now(), ip);
+    run_service_visit(&mut visit, stream, shared.time_limit, service);
+    record_and_show(&visit, shared);
+}
+
+// This is a worked example for Stages 8 and 10. It's your `serve_next` with the visit handed to
+// whatever `handle` is, so every fake service shares the same caps on connections. `FnOnce` means
+// any function or closure that can be called once, and `Send + 'static` means it can be moved onto
+// the new thread, as everything in a `move` closure has to be.
+pub fn serve_next_with<F>(listener: &TcpListener, shared: &Shared, handle: F) -> io::Result<()>
+where
+    F: FnOnce(&TcpStream, IpAddr, &Shared) + Send + 'static,
+{
+    let (stream, addr) = listener.accept()?;
+    let ip = addr.ip();
+    match Slot::try_take(&shared.limits, ip) {
+        None => shared.note_refused(),
+        Some(slot) => {
+            let shared = shared.clone();
+            thread::Builder::new().spawn(move || {
+                let _slot = slot;
+                handle(&stream, ip, &shared);
             })?;
         }
     }

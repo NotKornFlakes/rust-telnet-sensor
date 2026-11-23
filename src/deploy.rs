@@ -103,10 +103,25 @@ pub fn check_address(address: SocketAddr, checklist_done: bool) -> io::Result<()
 ///
 /// `credentials` is the file of logins for the fake shell from Stage 7. With no file, the shell
 /// stays off and every login is rejected.
+///
+/// `web_listen` is where the fake web service from Stage 8 listens, and `ftp_listen` and
+/// `ssh_listen` are for the services from Stage 10. With no address, each one is off. They go
+/// through `check_address` too, so they follow the same rule as the telnet port.
 #[derive(Debug)]
 pub struct Settings {
     listen: SocketAddr,
     credentials: Option<PathBuf>,
+    web_listen: Option<SocketAddr>,
+    ftp_listen: Option<SocketAddr>,
+    ssh_listen: Option<SocketAddr>,
+}
+
+// The addresses for the services that are off unless you ask, as they came from the command line.
+#[derive(Debug, Default)]
+struct ExtraAddresses<'a> {
+    web: Option<&'a str>,
+    ftp: Option<&'a str>,
+    ssh: Option<&'a str>,
 }
 
 impl Settings {
@@ -114,18 +129,37 @@ impl Settings {
         listen: &str,
         checklist_done: bool,
         credentials: Option<PathBuf>,
+        extra: ExtraAddresses,
     ) -> io::Result<Settings> {
         let listen = parse_listen_address(listen)?;
         check_address(listen, checklist_done)?;
         Ok(Settings {
             listen,
             credentials,
+            web_listen: checked_extra(extra.web, checklist_done)?,
+            ftp_listen: checked_extra(extra.ftp, checklist_done)?,
+            ssh_listen: checked_extra(extra.ssh, checklist_done)?,
         })
     }
 
     /// The file of logins for the fake shell, if there is one.
     pub fn credentials(&self) -> Option<&Path> {
         self.credentials.as_deref()
+    }
+
+    /// Where the fake web service listens, if it's on.
+    pub fn web_listen(&self) -> Option<SocketAddr> {
+        self.web_listen
+    }
+
+    /// Where the fake FTP service listens, if it's on.
+    pub fn ftp_listen(&self) -> Option<SocketAddr> {
+        self.ftp_listen
+    }
+
+    /// Where the fake SSH service listens, if it's on.
+    pub fn ssh_listen(&self) -> Option<SocketAddr> {
+        self.ssh_listen
     }
 
     /// EXERCISE 3: read the settings from the command line.
@@ -156,6 +190,7 @@ impl Settings {
         let mut listen = DEFAULT_LISTEN.to_string();
         let mut checklist_done = false;
         let mut credentials = None;
+        let mut extra = ExtraAddresses::default();
         let mut args_iter = args.iter();
 
         while let Some(arg) = args_iter.next() {
@@ -180,18 +215,43 @@ impl Settings {
                         ));
                     }
                 }
+                // Stages 8 and 10 add these. Each takes an address, like `--listen`.
+                "--web-listen" => extra.web = Some(next_value(&mut args_iter, arg)?),
+                "--ftp-listen" => extra.ftp = Some(next_value(&mut args_iter, arg)?),
+                "--ssh-listen" => extra.ssh = Some(next_value(&mut args_iter, arg)?),
                 _ => {
                     return Err(setting_error(format!("unknown argument: {arg}")));
                 }
             }
         }
 
-        Settings::checked(&listen, checklist_done, credentials)
+        Settings::checked(&listen, checklist_done, credentials, extra)
     }
 
     /// Starts listening at the address these settings allow.
     pub fn open_listener(&self) -> io::Result<TcpListener> {
         TcpListener::bind(self.listen)
+    }
+}
+
+// This is a worked example from Stage 8. It's what `--listen` does with the argument after it, for
+// flags added later.
+fn next_value<'a>(args: &mut std::slice::Iter<'a, String>, flag: &str) -> io::Result<&'a str> {
+    match args.next() {
+        Some(value) => Ok(value),
+        None => Err(setting_error(format!("missing address after {flag}"))),
+    }
+}
+
+// An address for a service that's off unless you ask, checked by the same rule as `--listen`.
+fn checked_extra(text: Option<&str>, checklist_done: bool) -> io::Result<Option<SocketAddr>> {
+    match text {
+        Some(text) => {
+            let address = parse_listen_address(text)?;
+            check_address(address, checklist_done)?;
+            Ok(Some(address))
+        }
+        None => Ok(None),
     }
 }
 
