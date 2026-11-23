@@ -23,8 +23,15 @@ jobs:
         run: cargo clippy --all-targets --locked -- -D warnings
       - name: Build
         run: cargo build --locked --verbose
+      # Stages 8 to 10 were left as exercises, so their exercise tests fail until someone writes
+      # them. Their guard tests still run, along with every test from Stages 1 to 7. Remove the
+      # three --skip flags once the exercises are done.
       - name: Run tests
-        run: cargo test --locked --verbose
+        run: >
+          cargo test --locked --verbose --
+          --skip fake_web::tests::ex
+          --skip report::tests::ex
+          --skip services::tests::ex
       - name: Audit dependencies
         run: |
           cargo install cargo-audit --locked

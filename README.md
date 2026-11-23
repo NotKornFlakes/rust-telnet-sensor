@@ -10,6 +10,12 @@ shell that's entirely fake: every reply is fixed text compiled into the program,
 a visitor sends is ever run or fetched. It was built stage by stage as a way to learn Rust,
 and that guide is below, under "How it was built".
 
+**Status: finished.** The project ended on 2026-11-22 and the server has been shut down, so
+nothing is listening any more. Stages 1 to 7 were built and deployed, and the findings are in
+[the report](README_REPORT.md). Stages 8 to 10 are written up as exercises with tests, but they
+were never finished or deployed. Raw logs were never published, and they're deleted on the
+30-day schedule described under Stage 6.
+
 - **5,527 connections** from 790 IP addresses in 186 hours, Nov 3 to Nov 10
 - **839 fake-shell sessions** and 3,784 commands
 - **23 download attempts** and **0 outbound connections** from the honeypot
