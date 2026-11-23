@@ -460,6 +460,9 @@ telnet_in
 
 ## Next steps
 
+*The project ended on 2026-11-22, the server was shut down, and these weren't done. They're
+left here for anyone who wants to carry the work on.*
+
 1. Deploy the fixed `SHELL_TEST` reply, which is already written and tested, to see whether those
    bots go further when the word comes back. Reinstalling can change the address, so they may not
    return.
