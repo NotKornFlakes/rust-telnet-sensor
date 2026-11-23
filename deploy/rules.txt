@@ -1,0 +1,20 @@
+# Rules for the report tool from Stage 9: cargo run --bin report -- ~/honeypot-logs --rules deploy/rules.txt
+#
+# One rule a line: a name, where to look, and the text to look for, with | between them.
+# Where to look is path, header, body, command, url or any. Case doesn't matter.
+# Values in the logs were escaped before they were stored, so copy text from a log line as it
+# appears there. Add a dated comment for each rule, saying where it came from.
+#
+# Never paste a whole exploit in here. A short piece that identifies it is enough.
+
+# From the Stage 7 findings in README_REPORT.md: checks that this is a real shell.
+busybox check    | command | /bin/busybox
+writable folder  | command | cd /tmp
+kill rival bots  | command | pkill
+
+# Well-known web probes, to check the web service is seeing them.
+jndi lookup      | any     | ${jndi:
+php probe        | path    | .php
+env file         | path    | /.env
+router cgi       | path    | /cgi-bin/
+shell in a body  | body    | wget http

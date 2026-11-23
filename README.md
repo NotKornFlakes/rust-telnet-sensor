@@ -98,6 +98,14 @@ they tried to log in.
 These haven't changed: the two outbound firewalls, admin access only through IAP, no service
 account, the systemd sandbox, IPv4 only, and refusing to run as root.
 
+Stages 8 and 10 open more ports, and each one is a new way in. They share the same caps on
+connections, the same 30-second deadline, the same rate limit and the same daily log budget as
+the login, and each is off unless you give it an address. The web service also has its own daily
+budget, like the shell. Every reply is still `&'static str`, and the guard tests in
+`src/fake_web.rs` and `src/services.rs` check the same rules as Stage 7's: no files, no programs,
+no network, no redirects, and no real product's name. Stage 9's report tool never goes on the
+server at all.
+
 ## How to work through a stage
 
 1. Open the stage's file and read it from top to bottom.
@@ -151,6 +159,30 @@ This only needs your own computer, and the logins are made up.
    closes.
 5. Stop it and start it with plain `cargo run`. Now `root` and `root` are rejected too, because
    the shell is off unless you ask for it.
+
+## Trying it after Stage 8
+
+1. Start it with `cargo run -- --web-listen 127.0.0.1:8080`. In a second terminal, run
+   `printf 'GET /cgi-bin/test?id=1 HTTP/1.1\r\nHost: x\r\n\r\n' | nc -q1 127.0.0.1 8080`. You
+   get the same "Not Found" page whatever you send.
+2. Try a body: `printf 'POST /x HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello' | nc -q1 127.0.0.1 8080`.
+3. Run `tail -n 2 logs/visits-*.jsonl`. The second line's `body` is `aGVsbG8=`, which is `hello` in
+   base64. The first terminal shows only the method and the path, without the `?id=1`.
+
+## Trying it after Stage 9
+
+1. Generate a few visits as above, then run `cargo run --bin report -- logs --rules deploy/rules.txt`.
+2. Add `--show-secrets` to see passwords and full addresses. Without it, they're hidden.
+3. The report refuses to run on a folder other users can read, just as the honeypot refuses to
+   write to one. Your downloaded copies in `~/honeypot-logs` are already private.
+
+## Trying it after Stage 10
+
+1. Start it with `cargo run -- --ftp-listen 127.0.0.1:2121 --ssh-listen 127.0.0.1:2222`.
+2. Run `printf 'USER anonymous\r\nPASS guest\r\n' | nc -q1 127.0.0.1 2121`. The login always fails.
+3. Run `printf 'SSH-2.0-test\r\n' | nc -q1 127.0.0.1 2222`. You get the banner and nothing else.
+4. Run `tail -n 2 logs/visits-*.jsonl`. Each line has its `service`, and the SSH one has your
+   `client_banner`.
 
 ## Roadmap
 
@@ -261,7 +293,7 @@ internet at first. The other fake services follow one at a time.
 Build and test each of these on localhost. Anything that runs on the server is deployed
 only once its tests and the safety checks pass.
 
-- [ ] **Stage 7: A fake shell behind the login** (`src/fake_shell.rs`): logins from a list you
+- [x] **Stage 7: A fake shell behind the login** (`src/fake_shell.rs`): logins from a list you
       choose get into a shell that's entirely made up, so you can see what people do after they
       log in. This makes it medium-interaction, but nothing is ever run. Reading a settings file,
       `&'static str`, `let ... else`, `flat_map`, `.find(...)`, `serde` attributes, implementing
@@ -370,9 +402,10 @@ only once its tests and the safety checks pass.
     - [x] Any `egress-blocked-honeypot` line was already a reason to stop, and it now matters most
           of all: straight after a download in the logs, it would mean the program tried to do what
           it was told
-- [ ] **Stage 8: A fake web service**: reading HTTP requests by hand and logging each one
-      in full (method, path, headers and body), so you can spot attempts to exploit
-      newly announced vulnerabilities. `Vec`, iterators, working with raw bytes.
+- [ ] **Stage 8: A fake web service** (`src/fake_web.rs`): reading HTTP requests by hand and
+      logging each one in full (method, path, headers and body), so you can spot attempts to
+      exploit newly announced vulnerabilities. `Vec`, iterators, working with raw bytes, slice
+      patterns, base64 by hand, `serde` attributes
   - Every reply is one fixed, generic page built into the program. It never serves files,
     repeats anything from the request, redirects or acts as a proxy
   - Requests have a size limit. Anything longer is cut off and marked, with its full
@@ -383,22 +416,50 @@ only once its tests and the safety checks pass.
   - The screen shows only the method and the escaped path, never headers or bodies
   - It starts with plain HTTP. Requests sent only over HTTPS won't be seen, because that
     needs a certificate and another crate, so it would be a later addition
-  - Before opening the port, check that Google's answer covers full request logging. Open
-    the port in both firewalls, and forward it to a port above 1024 instead of running as
-    root
-- [ ] **Stage 9: A report tool for your own computer**: a separate program that reads the
-      logs you've downloaded, and is never uploaded to the server. Top usernames,
-      passwords, commands, download addresses, paths and services, and what changed from day
-      to day. A rules file you
-      update by hand when a vulnerability is announced, matching paths, headers and
-      bodies, showing when each rule was first and last seen and how many IPs it came
-      from. It can only look back as far as the logs you've kept. `HashMap`, sorting,
-      reading JSON back.
+  - It's off unless you pass `--web-listen`, which follows the same rule as `--listen`
+  - **Before it goes on the server**
+    - [ ] Finish the exercises. `cargo test` passes, including the `guard_` tests, and `cargo
+          clippy` and `cargo audit` have nothing new to say
+    - [ ] Try it on localhost, as described above
+    - [ ] Decide again about Google's terms. Logging whole requests, headers and bodies included,
+          goes further than the decisions written down for Stages 6 and 7, so write down the date,
+          what you read and why you're going ahead
+    - [ ] Decide again about the data. Headers and bodies can hold cookies, tokens and other
+          people's details. Write down that you're keeping them for `KEEP_DAYS` days
+    - [ ] Open the port in both firewalls: Google's, and `nftables` on the server, forwarding port
+          80 to a port above 1024 such as 8080, as port 23 goes to 2323, instead of running as root
+    - [ ] Add `--web-listen 0.0.0.0:8080` to the systemd service, reinstall, and check the logs for
+          a day, as you did for the shell
+- [ ] **Stage 9: A report tool for your own computer** (`src/report.rs` and `src/bin/report.rs`): a
+      separate program that reads the logs you've downloaded, and is never uploaded to the server.
+      Top usernames, passwords, commands, download addresses, paths and services, and what changed
+      from day to day. A rules file you update by hand when a vulnerability is announced
+      (`deploy/rules.txt`), matching paths, headers and bodies, showing when each rule was first
+      and last seen and how many IPs it came from. It can only look back as far as the logs you've
+      kept. `HashMap`, `HashSet`, `BTreeMap`, sorting, reading JSON back with `Deserialize`
   - It treats logs as hostile: plain text output only, with everything escaped
-  - It never connects to anything, so no looking up IPs and no opening links
+  - It never connects to anything, so no looking up IPs and no opening links. Download addresses
+    are printed defanged, so they can't be clicked
   - Passwords and IPs are hidden by default
   - Downloaded logs follow safety rule 4 on your computer too: a private folder, out of
-    git and cloud sync, and deleted on the same schedule
-- [ ] **Stage 10: More fake services**: a `FakeService` trait, plus fixed banners and
-      prompts for FTP and SSH (the version banner only), all sharing the same limits.
-      Your own traits and enums
+    git and cloud sync, and deleted on the same schedule. The tool refuses to read a folder other
+    users can read
+- [ ] **Stage 10: More fake services** (`src/services.rs`): a `FakeService` trait, plus fixed
+      banners and prompts for FTP and SSH (the version banner only), all sharing the same limits.
+      Your own traits and enums, default methods, trait objects with `dyn` and `Arc`
+  - FTP has a login that always says no, so it records usernames and passwords, as the telnet
+    login did before Stage 7. No reply ever says a login worked
+  - SSH sends a generic version banner and writes down the client's, then stops. There's no key
+    exchange, so there's nothing to get into
+  - Both are off unless you pass `--ftp-listen` or `--ssh-listen`
+  - **Before it goes on the server**
+    - [ ] Finish the exercises, with `cargo test`, `cargo clippy` and `cargo audit` all clean
+    - [ ] Try it on localhost, as described above
+    - [ ] Decide again about Google's terms and the data, as for Stage 8
+    - [ ] Open each port in both firewalls and forward it to a port above 1024: 21 to 2121, and
+          22 to 2222. Take care with 22, because admin access also arrives on port 22, from the IAP
+          range. The `nftables` forward must skip that range (`tcp dport 22 ip saddr != $IAP_RANGE
+          redirect to :2222`), or every admin login lands in the fake SSH and you're locked out.
+          Test admin access through the tunnel straight after loading the rules, before opening
+          Google's firewall
+    - [ ] Add the flags to the systemd service, reinstall, and check the logs for a day
